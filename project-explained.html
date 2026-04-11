@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Whispering MVP – vysvětlení projektu</title>
+  <style>
+    :root {
+      --bg: #f6f8fc;
+      --panel: #ffffff;
+      --panel-soft: #f2f5fb;
+      --text: #1b2432;
+      --muted: #5e6b83;
+      --line: #d9e1ef;
+      --accent: #2f6feb;
+      --accent-soft: #e8f0ff;
+      --green: #0f7b6c;
+      --code-bg: #f7f9fd;
+      --shadow: 0 14px 36px rgba(35, 55, 90, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top right, rgba(47, 111, 235, 0.08), transparent 22%),
+        linear-gradient(180deg, #f8fbff 0%, #f4f7fc 100%);
+      color: var(--text);
+      line-height: 1.7;
+    }
+
+    .page {
+      width: min(1500px, calc(100vw - 32px));
+      margin: 20px auto 48px;
+    }
+
+    .hero,
+    .section,
+    .summary {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      padding: 28px 30px;
+      margin-bottom: 20px;
+    }
+
+    .hero h1 {
+      margin: 0 0 10px;
+      font-size: clamp(2rem, 3.2vw, 3.4rem);
+      line-height: 1.08;
+      letter-spacing: -0.03em;
+    }
+
+    .hero p {
+      margin: 0;
+      max-width: 980px;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .chip {
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid #cfe0ff;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 0.94rem;
+      font-weight: 600;
+    }
+
+    .section {
+      display: grid;
+      grid-template-columns: minmax(320px, 46%) minmax(360px, 54%);
+      overflow: hidden;
+      margin-bottom: 18px;
+    }
+
+    .code-pane,
+    .text-pane {
+      padding: 24px 24px 26px;
+    }
+
+    .code-pane {
+      background: var(--code-bg);
+      border-right: 1px solid var(--line);
+    }
+
+    .text-pane {
+      background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 1.42rem;
+      letter-spacing: -0.02em;
+    }
+
+    h3 {
+      margin: 18px 0 8px;
+      color: var(--green);
+      font-size: 0.98rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    p {
+      margin: 0 0 12px;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    pre {
+      margin: 0;
+      padding: 18px;
+      overflow-x: auto;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: #fcfdff;
+      color: #22304a;
+      font-size: 0.91rem;
+      line-height: 1.55;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+
+    .inline {
+      padding: 0.12em 0.42em;
+      border-radius: 7px;
+      background: var(--accent-soft);
+      color: #184fbf;
+      font-size: 0.95em;
+    }
+
+    ul {
+      margin: 0;
+      padding-left: 20px;
+    }
+
+    li {
+      margin-bottom: 8px;
+    }
+
+    .flow {
+      display: grid;
+      gap: 10px;
+      margin-top: 8px;
+    }
+
+    .flow div {
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: var(--panel-soft);
+    }
+
+    .summary {
+      padding: 24px 28px;
+      margin-top: 20px;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(280px, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      padding: 18px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: #fbfcff;
+    }
+
+    @media (max-width: 980px) {
+      .section {
+        grid-template-columns: 1fr;
+      }
+
+      .code-pane {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .summary-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <h1>Whispering MVP: přesné vysvětlení, jak tenhle Rust projekt funguje</h1>
+      <p>
+        Tohle je malá desktopová aplikace v Rustu. Po kliknutí na tlačítko začne nahrávat z výchozího
+        mikrofonu, průběžně ukládá audio do dočasného WAV souboru, po zastavení ho připraví do formátu
+        vhodného pro Whisper a zavolá lokální model, který vrátí český přepis. Výsledek se zobrazí v GUI
+        a zároveň se vypíše do standardního výstupu.
+      </p>
+      <div class="chips">
+        <span class="chip">GUI: eframe / egui</span>
+        <span class="chip">Vstup z mikrofonu: cpal</span>
+        <span class="chip">WAV čtení: hound</span>
+        <span class="chip">Převzorkování: rubato</span>
+        <span class="chip">Přepis: transcribe-rs + Whisper</span>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="code-pane">
+        <h2>1. Vstupní bod programu</h2>
+<pre><code>const MODEL_PATH: &amp;str = ".../ggml-large-v3-turbo.bin";
+const LANGUAGE: &amp;str = "cs";
+
+fn main() -&gt; eframe::Result&lt;()&gt; {
+    env_logger::init();
+
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("Whispering MVP")
+            .with_inner_size([720.0, 420.0]),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "Whispering MVP",
+        options,
+        Box::new(|_cc| Ok(Box::new(WhisperingMvpApp::default()))),
+    )
+}</code></pre>
+      </div>
+      <div class="text-pane">
+        <h2>Co se děje při startu</h2>
+        <p>
+          Skutečný vstupní bod aplikace je <span class="inline">src/main.rs</span>. Cargo standardně spouští právě
+          tenhle soubor. Kód nastaví logger, vytvoří nativní okno a předá řízení frameworku
+          <span class="inline">eframe</span>, který pak pravidelně volá update smyčku aplikace.
+        </p>
+        <p>
+          Konstanty <span class="inline">MODEL_PATH</span> a <span class="inline">LANGUAGE</span> určují, jaký
+          Whisper model se použije a že přepis má běžet v češtině.
+        </p>
+        <h3>Co je jiné oproti TypeScriptu</h3>
+        <p>
+          Návratový typ <span class="inline">Result&lt;()&gt;</span> je v Rustu běžný. Místo výjimek se chyba vrací
+          explicitně v typu. To je podobné jako práce s <span class="inline">Result</span> v Kotlinu, jen v Rustu
+          je to základní idiom skoro všude.
+        </p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="code-pane">
+        <h2>2. Vlastní chybový typ a zapisování WAV</h2>
+<pre><code>#[derive(Debug, Error)]
+enum AppError {
+    #[error("{0}")]
+    Message(String),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("WAV error: {0}")]
+    Wav(#[from] hound::Error),
+}
+
+type Result&lt;T&gt; = std::result::Result&lt;T, AppError&gt;;
+
+struct ProgressiveWavWriter {
+    writer: BufWriter&lt;File&gt;,
+    sample_rate: u32,
+    channels: u16,
+    bytes_per_sample: u16,
+    data_chunk_size_pos: u64,
+    riff_chunk_size_pos: u64,
+    samples_written: u64,
+    last_header_update: Instant,
+}</code></pre>
+      </div>
+      <div class="text-pane">
+        <h2>Jak projekt reprezentuje chyby a audio výstup</h2>
+        <p>
+          <span class="inline">AppError</span> je vlastní enum pro chyby aplikace. Místo jedné obecné exception
+          má projekt přesně popsané varianty chyb. Díky atributu <span class="inline">#[from]</span> se některé
+          typy chyb automaticky převádějí do <span class="inline">AppError</span>.
+        </p>
+        <p>
+          <span class="inline">ProgressiveWavWriter</span> ručně zapisuje WAV soubor. To je důležité, protože při
+          startu nahrávání ještě není známá finální délka audia. Writer si proto uloží pozice v hlavičce souboru
+          a průběžně je aktualizuje.
+        </p>
+        <h3>Co je jiné oproti C</h3>
+        <p>
+          Tohle je stále nízkoúrovňová práce se souborem a bajty, ale bez ruční správy paměti. Vlastnictví
+          souboru i writeru hlídá kompilátor, takže nevznikají tak snadno use-after-free problémy.
+        </p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="code-pane">
+        <h2>3. Spuštění nahrávání a worker vlákno</h2>
+<pre><code>fn start_new_recording(&amp;mut self) -&gt; Result&lt;()&gt; {
+    self.close_session()?;
+
+    let file_path = std::env::temp_dir().join(format!("whispering-mvp-{}.wav", ...));
+    let host = cpal::default_host();
+    let device = host.default_input_device()
+        .ok_or_else(|| AppError::Message("No default input device available.".into()))?;
+
+    let config = get_optimal_config(&amp;device, Some(16000))?;
+    let writer = Arc::new(Mutex::new(ProgressiveWavWriter::new(
+        &amp;file_path, sample_rate, channels,
+    )?));
+
+    let (cmd_tx, cmd_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let stream = build_input_stream(..., is_recording.clone(), writer_clone)?;
+        stream.play()?;
+
+        while let Ok(cmd) = cmd_rx.recv() {
+            match cmd {
+                RecorderCmd::Start(reply_tx) =&gt; { ... }
+                RecorderCmd::Stop(reply_tx) =&gt; { ... }
+                RecorderCmd::Shutdown =&gt; break,
+            }
+        }
+    });
+}</code></pre>
+      </div>
+      <div class="text-pane">
+        <h2>Jak funguje recording pipeline</h2>
+        <p>
+          Při startu se nejdřív zavře předchozí session, pak se vytvoří dočasný WAV soubor a najde se výchozí
+          mikrofon. Aplikace zvolí vhodnou konfiguraci vstupu a spustí samostatné worker vlákno, které drží
+          audio stream otevřený.
+        </p>
+        <div class="flow">
+          <div><strong>GUI vlákno</strong> reaguje na kliknutí uživatele a posílá příkazy.</div>
+          <div><strong>Kanál mpsc</strong> přenáší příkazy start / stop / shutdown.</div>
+          <div><strong>Worker vlákno</strong> obsluhuje stream a zapisuje audio do souboru.</div>
+        </div>
+        <h3>Co je tu rustovské</h3>
+        <ul>
+          <li><span class="inline">Arc&lt;Mutex&lt;T&gt;&gt;</span> znamená sdílená vlastněná data s bezpečným zamykáním.</li>
+          <li><span class="inline">mpsc::channel()</span> je standardní kanál pro komunikaci mezi vlákny.</li>
+          <li><span class="inline">move ||</span> přesune vlastnictví dovnitř closure, takže nehrozí visící reference.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="code-pane">
+        <h2>4. Výběr nejlepší konfigurace mikrofonu</h2>
+<pre><code>fn get_optimal_config(
+    device: &amp;Device,
+    preferred_sample_rate: Option&lt;u32&gt;,
+) -&gt; Result&lt;cpal::SupportedStreamConfig&gt; {
+    let target_sample_rate = preferred_sample_rate.unwrap_or(16000);
+    let configs: Vec&lt;_&gt; = device.supported_input_configs()?.collect();
+
+    let compatible_configs: Vec&lt;_&gt; = configs
+        .iter()
+        .filter(|config| supported_formats.contains(&amp;config.sample_format()))
+        .collect();
+
+    // 1) preferuj mono + přesně 16 kHz
+    // 2) pak libovolný počet kanálů + 16 kHz
+    // 3) nakonec nejbližší použitelnou variantu
+}</code></pre>
+      </div>
+      <div class="text-pane">
+        <h2>Proč se řeší sample rate a kanály</h2>
+        <p>
+          Whisper chce ideálně mono audio na <span class="inline">16 000 Hz</span>. Proto aplikace nejdřív zkouší
+          najít konfiguraci, která tomu co nejvíc odpovídá už na vstupu. Tím se zmenší množství práce při následném
+          převodu.
+        </p>
+        <p>
+          Pokud mikrofon přesně takovou konfiguraci neumí, kód vybere nejbližší použitelnou variantu. To je praktická
+          obrana proti různému hardwaru na různých počítačích.
+        </p>
+        <h3>Co je jiné oproti Kotlinu</h3>
+        <p>
+          Typ <span class="inline">Option&lt;u32&gt;</span> je explicitní „možná tam hodnota je, možná ne“. Nejde o
+          nullable typ; kompilátor tě nutí obě varianty vyřešit.
+        </p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="code-pane">
+        <h2>5. Audio callback a normalizace vzorků</h2>
+<pre><code>match sample_format {
+    SampleFormat::F32 =&gt; device.build_input_stream(
+        config,
+        move |data: &amp;[f32], _| {
+            if is_recording.load(Ordering::Relaxed)
+                &amp;&amp; let Ok(mut writer) = writer.lock()
+            {
+                let _ = writer.write_samples_f32(data);
+            }
+        },
+        err_fn,
+        None,
+    ),
+    SampleFormat::I16 =&gt; { ... }
+    SampleFormat::U16 =&gt; { ... }
+    _ =&gt; Err(...)
+}</code></pre>
+      </div>
+      <div class="text-pane">
+        <h2>Co se děje při příjmu audia</h2>
+        <p>
+          Knihovna <span class="inline">cpal</span> volá callback pokaždé, když dorazí další blok vzorků z mikrofonu.
+          Podle typu vstupu se vytvoří odpovídající verze callbacku pro <span class="inline">f32</span>,
+          <span class="inline">i16</span> nebo <span class="inline">u16</span>.
+        </p>
+        <p>
+          Pokud je nahrávání aktivní, callback zamkne writer a zapíše data do WAV souboru. U integer formátů se
+          hodnoty nejdřív převedou na normalizované <span class="inline">f32</span>, aby měl další processing
+          jednotný vstup.
+        </p>
+        <h3>Důležitý rozdíl proti C</h3>
+        <p>
+          Sdílený mutable stav tu nejde používat „jen tak“. Rust tě nutí použít bezpečný mechanismus jako
+          <span class="inline">Mutex</span> nebo atomické typy, takže datové závody nejsou jen otázka disciplíny.
+        </p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="code-pane">
+        <h2>6. Správa Whisper modelu</h2>
+<pre><code>#[derive(Clone)]
+struct ModelManager {
+    engine: Arc&lt;Mutex&lt;Option&lt;Engine&gt;&gt;&gt;,
+    current_model_path: Arc&lt;Mutex&lt;Option&lt;PathBuf&gt;&gt;&gt;,
+    last_activity: Arc&lt;Mutex&lt;SystemTime&gt;&gt;,
+    idle_timeout: Duration,
+}
+
+fn get_or_load_whisper(&amp;self, model_path: PathBuf)
+    -&gt; Result&lt;Arc&lt;Mutex&lt;Option&lt;Engine&gt;&gt;&gt;&gt; {
+    let needs_load = match (&amp;*engine_guard, &amp;*current_path_guard) {
+        (None, _) =&gt; true,
+        (Some(_), Some(path)) if path != &amp;model_path =&gt; true,
+        _ =&gt; false,
+    };
+
+    if needs_load {
+        let mut engine = WhisperEngine::new();
+        engine.load_model(&amp;model_path)?;
+        *engine_guard = Some(Engine::Whisper(engine));
+    }
+}</code></pre>
+      </div>
+      <div class="text-pane">
+        <h2>Lazy load modelu a idle unload</h2>
+        <p>
+          Whisper model se nenačítá při spuštění aplikace, ale až ve chvíli, kdy je skutečně potřeba přepisovat.
+          To zrychluje start programu a šetří paměť.
+        </p>
+        <p>
+          <span class="inline">ModelManager</span> si pamatuje, jaký model je právě nahraný, a čas poslední aktivity.
+          Pokud je aplikace pět minut nečinná, model se uvolní z paměti.
+        </p>
+        <h3>Rust detail</h3>
+        <p>
+          <span class="inline">Option&lt;Engine&gt;</span> nahrazuje nullable objekt. Díky pattern matchingu se dobře
+          modelují všechny možné stavy bez nejasného „může být null“.
+        </p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="code-pane">
+        <h2>7. Přepis WAV souboru na text</h2>
+<pre><code>fn transcribe_wav_file(model_manager: &amp;ModelManager, file_path: &amp;PathBuf)
+    -&gt; Result&lt;String&gt; {
+    let audio_data = std::fs::read(file_path)?;
+    let samples = extract_whisper_samples_from_wav(audio_data)?;
+    if samples.is_empty() {
+        return Ok(String::new());
+    }
+
+    let engine_arc = model_manager.get_or_load_whisper(PathBuf::from(MODEL_PATH))?;
+    let mut params = WhisperInferenceParams::default();
+    params.language = Some(LANGUAGE.to_string());
+    params.print_progress = false;
+    params.suppress_blank = true;
+
+    let mut engine_guard = engine_arc.lock()?;
+    let Engine::Whisper(whisper_engine) = engine;
+    let result = whisper_engine.transcribe_samples(samples, Some(params))?;
+    Ok(result.text.trim().to_string())
+}</code></pre>
+      </div>
+      <div class="text-pane">
+        <h2>Samotná transkripce</h2>
+        <p>
+          Po zastavení nahrávání se dočasný WAV soubor načte do paměti, z něj se vytáhnou vzorky, případně se
+          upraví na požadovaný formát a pak se zavolá Whisper. Pokud je audio prázdné, funkce vrátí prázdný řetězec.
+        </p>
+        <p>
+          Inference běží v samostatném vlákně, takže GUI nezamrzne. Hotový výsledek se pošle zpět přes kanál jako
+          <span class="inline">WorkerEvent</span>.
+        </p>
+        <h3>Rust vs Kotlin sealed classes</h3>
+        <p>
+          Řádek <span class="inline">let Engine::Whisper(whisper_engine) = engine;</span> je destrukturalizace enumu.
+          Je to podobná myšlenka jako práce se sealed class hierarchií, ale pattern matching je v Rustu přímá součást jazyka.
+        </p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="code-pane">
+        <h2>8. Downmix a převzorkování na 16 kHz</h2>
+<pre><code>let mono_samples = if channels &lt;= 1 {
+    samples_f32
+} else {
+    samples_f32
+        .chunks_exact(channels)
+        .map(|chunk| chunk.iter().sum::&lt;f32&gt;() / channels as f32)
+        .collect()
+};
+
+if spec.sample_rate == 16000 {
+    return Ok(mono_samples);
+}
+
+let resample_ratio = 16000.0 / spec.sample_rate as f64;
+let mut resampler = SincFixedIn::&lt;f32&gt;::new(resample_ratio, 8.0, params, chunk_size, 1)?;
+
+while input_pos &lt; mono_samples.len() {
+    let mut chunk = mono_samples[input_pos..end_pos].to_vec();
+    if chunk.len() &lt; chunk_size {
+        chunk.resize(chunk_size, 0.0);
+    }
+    let waves_out = resampler.process(&amp;vec![chunk], None)?;
+    output_samples.extend_from_slice(&amp;waves_out[0]);
+}</code></pre>
+      </div>
+      <div class="text-pane">
+        <h2>Příprava audia pro Whisper</h2>
+        <p>
+          Whisper očekává mono float samples na 16 kHz. Proto kód nejdřív udělá downmix více kanálů na jeden a pak,
+          pokud je potřeba, provede převzorkování pomocí knihovny <span class="inline">rubato</span>.
+        </p>
+        <p>
+          Zpracování po blocích je praktické kvůli resampleru i kvůli kontrolované práci s pamětí. Poslední blok
+          se doplní nulami a výsledný vektor se pak zkrátí na očekávanou délku.
+        </p>
+        <h3>Co je podobné Cčku</h3>
+        <p>
+          Tady už je kód hodně datově orientovaný: vektory, převody typů, výpočty délek, práce po blocích. Rozdíl je
+          v tom, že Rust hlídá indexování, vlastnictví i mutace výrazně přísněji.
+        </p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="code-pane">
+        <h2>9. Update smyčka GUI a uživatelský tok</h2>
+<pre><code>impl eframe::App for WhisperingMvpApp {
+    fn update(&amp;mut self, ctx: &amp;egui::Context, _frame: &amp;mut eframe::Frame) {
+        self.model_manager.unload_if_idle();
+
+        while let Ok(event) = self.worker_rx.try_recv() {
+            match event {
+                WorkerEvent::TranscriptReady(result) =&gt; {
+                    self.is_transcribing = false;
+                    match result {
+                        Ok(transcript) =&gt; {
+                            println!("{transcript}");
+                            self.transcript = transcript;
+                            self.status = "Done...".into();
+                        }
+                        Err(err) =&gt; self.status = format!("Transcription failed: {err}"),
+                    }
+                }
+            }
+        }
+
+        if ui.add_enabled(enabled, egui::Button::new(button_text)).clicked() {
+            self.toggle_recording();
+        }
+    }
+}</code></pre>
+      </div>
+      <div class="text-pane">
+        <h2>Jak to celé teče z pohledu uživatele</h2>
+        <p>
+          GUI běží v pravidelné update smyčce. V každém kroku zpracuje nové události z worker vlákna, případně
+          aktualizuje stav aplikace a znovu vykreslí tlačítko, status i textové pole s přepisem.
+        </p>
+        <p>
+          Uživatelský tok je jednoduchý: <strong>Start recording</strong> → nahrávání do WAV →
+          <strong>Stop recording</strong> → background thread spustí přepis → výsledek se vrátí do GUI.
+        </p>
+        <h3>Rust detail</h3>
+        <p>
+          Stav aplikace je přímo ve structu <span class="inline">WhisperingMvpApp</span> a metoda
+          <span class="inline">update(&amp;mut self, ...)</span> ho mění explicitně. Není v tom skoro žádná magie:
+          jen data a funkce nad nimi.
+        </p>
+      </div>
+    </section>
+
+    <section class="summary">
+      <h2>Celkový mentální model projektu</h2>
+      <div class="summary-grid">
+        <div class="card">
+          <h3>Architektura jednou větou</h3>
+          <p class="muted">
+            GUI vlákno řídí uživatele, worker vlákno drží audio stream, dočasný WAV odděluje nahrávání od přepisu
+            a <span class="inline">ModelManager</span> spravuje životní cyklus Whisper modelu.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Nejdůležitější rustovské pojmy</h3>
+          <ul>
+            <li><span class="inline">Result</span> a <span class="inline">Option</span> místo výjimek a nullů.</li>
+            <li><span class="inline">&amp;T</span> a <span class="inline">&amp;mut T</span> pro bezpečné reference.</li>
+            <li><span class="inline">Arc</span> + <span class="inline">Mutex</span> pro sdílení mezi vlákny.</li>
+            <li><span class="inline">enum</span> + pattern matching pro modelování stavů.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Kde je hlavní logika</h3>
+          <p class="muted">
+            Nejvíc důležitých rozhodnutí je ve funkcích <span class="inline">start_new_recording</span>,
+            <span class="inline">get_optimal_config</span>, <span class="inline">extract_whisper_samples_from_wav</span>
+            a <span class="inline">transcribe_wav_file</span>.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Co si z toho odnést</h3>
+          <p class="muted">
+            Tenhle projekt není obecný framework, ale soustředěná pipeline:
+            <strong>nahrát → uložit → převést → přepsat → zobrazit</strong>. Rust tu pomáhá hlavně přesným typováním,
+            bezpečnou prací mezi vlákny a explicitním zacházením s chybami.
+          </p>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
