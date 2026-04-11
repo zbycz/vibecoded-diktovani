@@ -568,9 +568,12 @@ impl ModelManager {
         let elapsed = SystemTime::now()
             .duration_since(*last_activity)
             .unwrap_or(Duration::ZERO);
+        drop(last_activity);
+
         if elapsed <= self.idle_timeout {
             return;
         }
+
         if let Ok(mut engine_guard) = self.engine.lock() {
             if let Some(mut engine) = engine_guard.take() {
                 engine.unload();
