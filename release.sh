@@ -10,6 +10,7 @@ APP_NAME="Diktovani"
 VERSION="${APP_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)}"
 APP_IDENTIFIER="${APP_IDENTIFIER:-com.example.diktovani}"
 MICROPHONE_USAGE_DESCRIPTION="${MICROPHONE_USAGE_DESCRIPTION:-Diktovani needs microphone access to record your speech for local transcription.}"
+SIGNING_IDENTITY="${SIGNING_IDENTITY:-}"
 APP_DIR="target/release/bundle/${APP_NAME}.app"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
@@ -86,7 +87,15 @@ cat > "${CONTENTS_DIR}/Info.plist" <<EOF
 </plist>
 EOF
 
-codesign --force --deep --sign - "$APP_DIR"
+if [[ -n "$SIGNING_IDENTITY" ]]; then
+    codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP_DIR"
+    echo "Signed ${APP_DIR} with identity: ${SIGNING_IDENTITY}"
+else
+    echo "Skipping codesign for local development builds."
+    echo "This keeps the app identity more stable for Accessibility/TCC than ad-hoc signing every rebuild."
+fi
 
 echo "Built ${APP_DIR}"
-echo "Auto-paste on macOS requires Accessibility permission for ${APP_IDENTIFIER} in System Settings > Privacy & Security > Accessibility."
+echo "Auto-paste and the double-Fn hotkey require Accessibility permission for Diktovani.app in System Settings > Privacy & Security > Accessibility."
+echo "Terminal Accessibility permission does not apply to the packaged app."
+echo "If a previously signed build was already granted access, remove the old Accessibility entry for Diktovani.app and grant it again."

@@ -66,6 +66,7 @@ pub struct WhisperingMvpApp {
     status_item: Option<MenuItem>,
     quit_item: Option<MenuItem>,
     hotkey_monitor: Option<HotkeyMonitor>,
+    waiting_for_accessibility_hotkey: bool,
     recorder: RecorderState,
     model_manager: ModelManager,
     last_transcript: String,
@@ -77,11 +78,12 @@ pub struct WhisperingMvpApp {
 
 impl WhisperingMvpApp {
     fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
-        let status = if has_accessibility_permission() {
+        let has_accessibility = has_accessibility_permission();
+        let status = if has_accessibility {
             "Ready. Left click the microphone in the menu bar or double-press Fn/Globe to dictate."
                 .to_string()
         } else {
-            "Ready. Left click to dictate. Auto-paste and the Fn/Globe hotkey need Accessibility permission."
+            "Ready. Left click to dictate. Enable Accessibility for Diktovani to turn on auto-paste and the Fn/Globe hotkey."
                 .to_string()
         };
 
@@ -93,6 +95,7 @@ impl WhisperingMvpApp {
             status_item: None,
             quit_item: None,
             hotkey_monitor: None,
+            waiting_for_accessibility_hotkey: !has_accessibility,
             recorder: RecorderState::new(),
             model_manager: ModelManager::new(),
             last_transcript: String::new(),
@@ -268,16 +271,39 @@ impl WhisperingMvpApp {
     }
 
     fn install_hotkey_monitor(&mut self) {
+        if self.hotkey_monitor.is_some() {
+            self.waiting_for_accessibility_hotkey = false;
+            return;
+        }
+
         let proxy = self.proxy.clone();
         match install_double_fn_monitor(move || {
             let _ = proxy.send_event(UserEvent::ToggleRecording);
         }) {
             Ok(monitor) => {
                 self.hotkey_monitor = Some(monitor);
+                self.waiting_for_accessibility_hotkey = false;
             }
             Err(err) => {
                 eprintln!("[hotkey] {err}");
             }
+        }
+    }
+
+    fn refresh_accessibility_hotkey(&mut self) {
+        if !self.waiting_for_accessibility_hotkey || self.hotkey_monitor.is_some() {
+            return;
+        }
+
+        if !has_accessibility_permission() {
+            return;
+        }
+
+        self.install_hotkey_monitor();
+        if self.hotkey_monitor.is_some() && !self.recorder.is_recording() && !self.is_transcribing {
+            self.set_status(
+                "Accessibility granted. Left click the microphone or double-press Fn/Globe to dictate.",
+            );
         }
     }
 }
@@ -321,8 +347,9 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                 });
 
                 if !request_accessibility_permission_if_needed() {
+                    self.waiting_for_accessibility_hotkey = true;
                     self.set_status(
-                        "Accessibility permission is needed for auto-paste. macOS settings were opened.",
+                        "Accessibility permission is needed for auto-paste and the Fn/Globe hotkey. macOS settings were opened.",
                     );
                 }
                 if has_accessibility_permission() {
@@ -428,6 +455,7 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.model_manager.unload_if_idle();
+        self.refresh_accessibility_hotkey();
         self.tick_spinner();
 
         let next_tick = if self.is_transcribing {
