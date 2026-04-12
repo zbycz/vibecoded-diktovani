@@ -1,7 +1,7 @@
 use crate::core::{
-    ModelManager, RecorderState, StatusCallback, copy_and_paste_text, ensure_model_cached,
-    has_accessibility_permission, is_launch_at_login_enabled, set_launch_at_login,
-    transcribe_wav_file, request_accessibility_permission_if_needed,
+    ModelManager, RecorderState, StatusCallback, copy_and_paste_text, copy_text_to_clipboard,
+    ensure_model_cached, has_accessibility_permission, is_launch_at_login_enabled,
+    request_accessibility_permission_if_needed, set_launch_at_login, transcribe_wav_file,
 };
 #[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
@@ -59,11 +59,13 @@ enum TrayVisualState {
 pub struct WhisperingMvpApp {
     proxy: EventLoopProxy<UserEvent>,
     tray_icon: Option<TrayIcon>,
+    copy_last_transcript_item: Option<MenuItem>,
     launch_at_login_item: Option<CheckMenuItem>,
     status_item: Option<MenuItem>,
     quit_item: Option<MenuItem>,
     recorder: RecorderState,
     model_manager: ModelManager,
+    last_transcript: String,
     status: String,
     is_transcribing: bool,
     spinner_phase: usize,
@@ -81,11 +83,13 @@ impl WhisperingMvpApp {
         Self {
             proxy,
             tray_icon: None,
+            copy_last_transcript_item: None,
             launch_at_login_item: None,
             status_item: None,
             quit_item: None,
             recorder: RecorderState::new(),
             model_manager: ModelManager::new(),
+            last_transcript: String::new(),
             status,
             is_transcribing: false,
             spinner_phase: 0,
@@ -93,8 +97,15 @@ impl WhisperingMvpApp {
         }
     }
 
-    fn build_tray_icon(&self) -> UiResult<(TrayIcon, CheckMenuItem, MenuItem, MenuItem)> {
+    fn build_tray_icon(
+        &self,
+    ) -> UiResult<(TrayIcon, MenuItem, CheckMenuItem, MenuItem, MenuItem)> {
         let menu = Menu::new();
+        let copy_last_transcript_item = MenuItem::new(
+            copy_last_transcript_menu_text(&self.last_transcript),
+            !self.last_transcript.trim().is_empty(),
+            None,
+        );
         let launch_at_login_item = CheckMenuItem::new(
             "Spouštět po startu systému",
             true,
@@ -104,6 +115,7 @@ impl WhisperingMvpApp {
         let status_item = MenuItem::new(status_menu_text(&self.status), false, None);
         let quit_item = MenuItem::new("Quit", true, None);
         menu.append(&status_item)?;
+        menu.append(&copy_last_transcript_item)?;
         menu.append(&launch_at_login_item)?;
         menu.append(&quit_item)?;
 
@@ -116,7 +128,13 @@ impl WhisperingMvpApp {
             .with_menu_on_right_click(true)
             .build()?;
 
-        Ok((tray_icon, launch_at_login_item, status_item, quit_item))
+        Ok((
+            tray_icon,
+            copy_last_transcript_item,
+            launch_at_login_item,
+            status_item,
+            quit_item,
+        ))
     }
 
     fn tooltip(&self) -> String {
@@ -133,6 +151,11 @@ impl WhisperingMvpApp {
         }
         if let Some(status_item) = self.status_item.as_ref() {
             status_item.set_text(status_menu_text(&self.status));
+        }
+        if let Some(copy_last_transcript_item) = self.copy_last_transcript_item.as_ref() {
+            copy_last_transcript_item
+                .set_text(copy_last_transcript_menu_text(&self.last_transcript));
+            copy_last_transcript_item.set_enabled(!self.last_transcript.trim().is_empty());
         }
         if apply_macos_symbol(tray_icon, state)
         {
@@ -256,8 +279,15 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
         }
 
         match self.build_tray_icon() {
-            Ok((tray_icon, launch_at_login_item, status_item, quit_item)) => {
+            Ok((
+                tray_icon,
+                copy_last_transcript_item,
+                launch_at_login_item,
+                status_item,
+                quit_item,
+            )) => {
                 self.tray_icon = Some(tray_icon);
+                self.copy_last_transcript_item = Some(copy_last_transcript_item);
                 self.launch_at_login_item = Some(launch_at_login_item);
                 self.status_item = Some(status_item);
                 self.quit_item = Some(quit_item);
@@ -300,6 +330,19 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
             UserEvent::TrayIconEvent(_) => {}
             UserEvent::MenuEvent(event) => {
                 if self
+                    .copy_last_transcript_item
+                    .as_ref()
+                    .is_some_and(|item| event.id == *item.id())
+                {
+                    match copy_text_to_clipboard(&self.last_transcript) {
+                        Ok(()) => self.set_status("Last transcript copied to clipboard."),
+                        Err(err) => {
+                            self.set_status(format!("Failed to copy last transcript: {err}"))
+                        }
+                    }
+                    return;
+                }
+                if self
                     .launch_at_login_item
                     .as_ref()
                     .is_some_and(|item| event.id == *item.id())
@@ -338,12 +381,14 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                     WorkerEvent::Success(transcript) => {
                         self.is_transcribing = false;
                         self.spinner_phase = 0;
+                        self.last_transcript = transcript.clone();
                         let preview = preview_text(&transcript);
                         self.set_status(format!("Transcript pasted. {preview}"));
                     }
                     WorkerEvent::PasteFailed { transcript, error } => {
                         self.is_transcribing = false;
                         self.spinner_phase = 0;
+                        self.last_transcript = transcript.clone();
                         let preview = preview_text(&transcript);
                         self.set_status(format!("Transcript ready but paste failed: {error}. {preview}"));
                     }
@@ -390,6 +435,14 @@ fn status_menu_text(status: &str) -> String {
         text.push_str("...");
     }
     format!("Status: {text}")
+}
+
+fn copy_last_transcript_menu_text(transcript: &str) -> String {
+    let compact = transcript.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        return "Skopírovat poslední přepis: —".to_string();
+    }
+    format!("Skopírovat poslední přepis: {compact}")
 }
 
 fn status_callback(proxy: EventLoopProxy<UserEvent>) -> StatusCallback {

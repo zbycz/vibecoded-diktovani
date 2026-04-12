@@ -711,6 +711,19 @@ pub fn copy_and_paste_text(text: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn copy_text_to_clipboard(text: &str) -> Result<()> {
+    if text.trim().is_empty() {
+        return Ok(());
+    }
+
+    let mut clipboard = Clipboard::new()
+        .map_err(|e| AppError::Message(format!("Failed to access clipboard: {e}")))?;
+    clipboard
+        .set_text(text.to_string())
+        .map_err(|e| AppError::Message(format!("Failed to write transcript to clipboard: {e}")))?;
+    Ok(())
+}
+
 pub fn is_launch_at_login_enabled() -> bool {
     #[cfg(target_os = "macos")]
     {
