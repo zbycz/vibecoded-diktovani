@@ -18,11 +18,11 @@ use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
 use std::fs::File;
-use std::io::{BufWriter, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
@@ -46,6 +46,7 @@ pub enum AppError {
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;
+pub type StatusCallback = Arc<dyn Fn(String) + Send + Sync + 'static>;
 
 #[derive(Debug)]
 pub struct AudioRecording {
@@ -564,15 +565,16 @@ impl ModelManager {
         Ok((self.engine.clone(), needs_load))
     }
 
-    pub fn preload_whisper(&self) -> Result<()> {
+    pub fn preload_whisper(&self, status_callback: Option<&StatusCallback>) -> Result<()> {
         let started_at = Instant::now();
-        let model_path = ensure_model_available()?;
+        let model_path = ensure_model_available(status_callback)?;
         println!(
             "[preload] starting Whisper preload from {}",
             model_path.display()
         );
 
         let (_, loaded_now) = self.get_or_load_whisper(model_path)?;
+        emit_status(status_callback, "Model ready.");
         let elapsed = started_at.elapsed();
 
         if loaded_now {
@@ -771,7 +773,11 @@ pub fn set_launch_at_login(enabled: bool) -> Result<()> {
     }
 }
 
-pub fn transcribe_wav_file(model_manager: &ModelManager, file_path: &PathBuf) -> Result<String> {
+pub fn transcribe_wav_file(
+    model_manager: &ModelManager,
+    file_path: &PathBuf,
+    status_callback: Option<&StatusCallback>,
+) -> Result<String> {
     let total_started_at = Instant::now();
     println!("[transcribe] reading audio from {}", file_path.display());
     let audio_data = std::fs::read(file_path)?;
@@ -792,8 +798,9 @@ pub fn transcribe_wav_file(model_manager: &ModelManager, file_path: &PathBuf) ->
     }
 
     let model_ready_started_at = Instant::now();
-    let model_path = ensure_model_available()?;
+    let model_path = ensure_model_available(status_callback)?;
     let (engine_arc, loaded_now) = model_manager.get_or_load_whisper(model_path.clone())?;
+    emit_status(status_callback, "Model ready. Transcribing...");
     println!(
         "[transcribe] model {} in {:.2}s ({})",
         if loaded_now {
@@ -839,7 +846,10 @@ pub fn transcribe_wav_file(model_manager: &ModelManager, file_path: &PathBuf) ->
     Ok(transcript)
 }
 
-fn ensure_model_available() -> Result<PathBuf> {
+fn ensure_model_available(status_callback: Option<&StatusCallback>) -> Result<PathBuf> {
+    let _download_guard = model_download_lock()
+        .lock()
+        .map_err(|err| AppError::Message(format!("Model download mutex poisoned: {err}")))?;
     let model_path = cache_model_path()?;
 
     if let Ok(metadata) = std::fs::metadata(&model_path)
@@ -865,21 +875,15 @@ fn ensure_model_available() -> Result<PathBuf> {
         MODEL_URL,
         model_path.display()
     );
+    emit_status(status_callback, "Downloading model: 0% · ETA --");
 
-    let status = Command::new("curl")
-        .args(["-L", "--fail", "--progress-bar", MODEL_URL, "-o"])
-        .arg(&partial_path)
-        .status()
-        .map_err(|err| AppError::Message(format!("Failed to start curl for model download: {err}")))?;
-
-    if !status.success() {
+    if let Err(err) = download_model_with_progress(&partial_path, status_callback) {
         let _ = std::fs::remove_file(&partial_path);
-        return Err(AppError::Message(format!(
-            "Model download failed with status {status}."
-        )));
+        return Err(err);
     }
 
     std::fs::rename(&partial_path, &model_path)?;
+    emit_status(status_callback, "Model download complete. Loading...");
     println!(
         "[model] download finished in {:.2}s: {}",
         started_at.elapsed().as_secs_f32(),
@@ -898,6 +902,95 @@ fn cache_model_path() -> Result<PathBuf> {
         .join(".cache")
         .join("diktovani")
         .join(MODEL_FILENAME))
+}
+
+fn model_download_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn emit_status(status_callback: Option<&StatusCallback>, status: impl Into<String>) {
+    if let Some(callback) = status_callback {
+        callback(status.into());
+    }
+}
+
+fn download_model_with_progress(
+    destination: &PathBuf,
+    status_callback: Option<&StatusCallback>,
+) -> Result<()> {
+    let response = ureq::get(MODEL_URL)
+        .call()
+        .map_err(|err| AppError::Message(format!("Model download request failed: {err}")))?;
+    let total_bytes = response
+        .header("Content-Length")
+        .and_then(|value| value.parse::<u64>().ok());
+
+    let mut reader = response.into_reader();
+    let mut writer = BufWriter::new(File::create(destination)?);
+    let mut buffer = [0u8; 256 * 1024];
+    let started_at = Instant::now();
+    let mut last_report = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
+    let mut downloaded = 0u64;
+
+    loop {
+        let bytes_read = reader.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        writer.write_all(&buffer[..bytes_read])?;
+        downloaded += bytes_read as u64;
+
+        if last_report.elapsed() >= Duration::from_millis(250) {
+            emit_status(
+                status_callback,
+                format_download_progress(downloaded, total_bytes, started_at.elapsed()),
+            );
+            last_report = Instant::now();
+        }
+    }
+
+    writer.flush()?;
+    emit_status(
+        status_callback,
+        format_download_progress(downloaded, total_bytes, started_at.elapsed()),
+    );
+    Ok(())
+}
+
+fn format_download_progress(
+    downloaded: u64,
+    total_bytes: Option<u64>,
+    elapsed: Duration,
+) -> String {
+    match total_bytes {
+        Some(total_bytes) if total_bytes > 0 => {
+            let progress = (downloaded as f64 / total_bytes as f64 * 100.0).clamp(0.0, 100.0);
+            let speed = downloaded as f64 / elapsed.as_secs_f64().max(0.001);
+            let remaining_bytes = total_bytes.saturating_sub(downloaded) as f64;
+            let eta = if speed > 0.0 {
+                format_eta(Duration::from_secs_f64(remaining_bytes / speed))
+            } else {
+                "--".into()
+            };
+            format!("Downloading model: {:.0}% · ETA {eta}", progress)
+        }
+        _ => format!("Downloading model: {:.1} MB", downloaded as f64 / 1_048_576.0),
+    }
+}
+
+fn format_eta(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    let minutes = seconds / 60;
+    let seconds = seconds % 60;
+    if minutes > 0 {
+        format!("{minutes}:{seconds:02}")
+    } else {
+        format!("{seconds}s")
+    }
 }
 
 #[cfg(target_os = "macos")]

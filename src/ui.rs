@@ -1,6 +1,7 @@
 use crate::core::{
-    ModelManager, RecorderState, copy_and_paste_text, has_accessibility_permission,
-    is_launch_at_login_enabled, set_launch_at_login, transcribe_wav_file,
+    ModelManager, RecorderState, StatusCallback, copy_and_paste_text,
+    has_accessibility_permission, is_launch_at_login_enabled, set_launch_at_login,
+    transcribe_wav_file,
 };
 #[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
@@ -8,6 +9,7 @@ use objc2::MainThreadMarker;
 use objc2_app_kit::NSImage;
 #[cfg(target_os = "macos")]
 use objc2_foundation::NSString;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem};
@@ -41,6 +43,7 @@ enum UserEvent {
 }
 
 enum WorkerEvent {
+    Status(String),
     Success(String),
     PasteFailed { transcript: String, error: String },
     Failed(String),
@@ -171,9 +174,14 @@ impl WhisperingMvpApp {
 
                     let proxy = self.proxy.clone();
                     let model_manager = self.model_manager.clone();
+                    let status_callback = status_callback(proxy.clone());
                     let file_path = recording.file_path;
                     thread::spawn(move || {
-                        let event = match transcribe_wav_file(&model_manager, &file_path) {
+                        let event = match transcribe_wav_file(
+                            &model_manager,
+                            &file_path,
+                            Some(&status_callback),
+                        ) {
                             Ok(transcript) => {
                                 println!("{transcript}");
                                 match copy_and_paste_text(&transcript) {
@@ -206,8 +214,9 @@ impl WhisperingMvpApp {
         match self.recorder.start_new_recording() {
             Ok(()) => {
                 let model_manager = self.model_manager.clone();
+                let status_callback = status_callback(self.proxy.clone());
                 thread::spawn(move || {
-                    if let Err(err) = model_manager.preload_whisper() {
+                    if let Err(err) = model_manager.preload_whisper(Some(&status_callback)) {
                         eprintln!("[preload] failed: {err}");
                     }
                 });
@@ -309,18 +318,25 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                 }
             }
             UserEvent::WorkerEvent(event) => {
-                self.is_transcribing = false;
-                self.spinner_phase = 0;
                 match event {
+                    WorkerEvent::Status(status) => {
+                        self.set_status(status);
+                    }
                     WorkerEvent::Success(transcript) => {
+                        self.is_transcribing = false;
+                        self.spinner_phase = 0;
                         let preview = preview_text(&transcript);
                         self.set_status(format!("Transcript pasted. {preview}"));
                     }
                     WorkerEvent::PasteFailed { transcript, error } => {
+                        self.is_transcribing = false;
+                        self.spinner_phase = 0;
                         let preview = preview_text(&transcript);
                         self.set_status(format!("Transcript ready but paste failed: {error}. {preview}"));
                     }
                     WorkerEvent::Failed(error) => {
+                        self.is_transcribing = false;
+                        self.spinner_phase = 0;
                         self.set_status(format!("Transcription failed: {error}"));
                     }
                 }
@@ -361,6 +377,12 @@ fn status_menu_text(status: &str) -> String {
         text.push_str("...");
     }
     format!("Status: {text}")
+}
+
+fn status_callback(proxy: EventLoopProxy<UserEvent>) -> StatusCallback {
+    Arc::new(move |status| {
+        let _ = proxy.send_event(UserEvent::WorkerEvent(WorkerEvent::Status(status)));
+    })
 }
 
 fn icon_for_state(state: TrayVisualState) -> Icon {
