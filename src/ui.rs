@@ -3,6 +3,7 @@ use crate::core::{
     ensure_model_cached, has_accessibility_permission, is_launch_at_login_enabled,
     request_accessibility_permission_if_needed, set_launch_at_login, transcribe_wav_file,
 };
+use crate::hotkey::{HotkeyMonitor, install_double_fn_monitor};
 #[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
@@ -39,6 +40,7 @@ pub fn run() -> UiResult<()> {
 enum UserEvent {
     TrayIconEvent(TrayIconEvent),
     MenuEvent(MenuEvent),
+    ToggleRecording,
     WorkerEvent(WorkerEvent),
 }
 
@@ -63,6 +65,7 @@ pub struct WhisperingMvpApp {
     launch_at_login_item: Option<CheckMenuItem>,
     status_item: Option<MenuItem>,
     quit_item: Option<MenuItem>,
+    hotkey_monitor: Option<HotkeyMonitor>,
     recorder: RecorderState,
     model_manager: ModelManager,
     last_transcript: String,
@@ -75,9 +78,11 @@ pub struct WhisperingMvpApp {
 impl WhisperingMvpApp {
     fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
         let status = if has_accessibility_permission() {
-            "Ready. Left click the microphone in the menu bar to dictate.".to_string()
+            "Ready. Left click the microphone in the menu bar or double-press Fn/Globe to dictate."
+                .to_string()
         } else {
-            "Ready. Left click to dictate. Auto-paste will ask for Accessibility permission when needed.".to_string()
+            "Ready. Left click to dictate. Auto-paste and the Fn/Globe hotkey need Accessibility permission."
+                .to_string()
         };
 
         Self {
@@ -87,6 +92,7 @@ impl WhisperingMvpApp {
             launch_at_login_item: None,
             status_item: None,
             quit_item: None,
+            hotkey_monitor: None,
             recorder: RecorderState::new(),
             model_manager: ModelManager::new(),
             last_transcript: String::new(),
@@ -260,6 +266,20 @@ impl WhisperingMvpApp {
         self.last_spinner_tick = Instant::now();
         self.refresh_tray(TrayVisualState::Transcribing(self.spinner_phase));
     }
+
+    fn install_hotkey_monitor(&mut self) {
+        let proxy = self.proxy.clone();
+        match install_double_fn_monitor(move || {
+            let _ = proxy.send_event(UserEvent::ToggleRecording);
+        }) {
+            Ok(monitor) => {
+                self.hotkey_monitor = Some(monitor);
+            }
+            Err(err) => {
+                eprintln!("[hotkey] {err}");
+            }
+        }
+    }
 }
 
 impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
@@ -305,6 +325,9 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                         "Accessibility permission is needed for auto-paste. macOS settings were opened.",
                     );
                 }
+                if has_accessibility_permission() {
+                    self.install_hotkey_monitor();
+                }
             }
             Err(err) => {
                 eprintln!("[tray] failed to create tray icon: {err}");
@@ -322,6 +345,7 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
         self.model_manager.unload_if_idle();
 
         match event {
+            UserEvent::ToggleRecording => self.toggle_recording(),
             UserEvent::TrayIconEvent(TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
