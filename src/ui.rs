@@ -4,13 +4,6 @@ use crate::core::{
     request_accessibility_permission_if_needed, set_launch_at_login, transcribe_wav_file,
 };
 #[cfg(target_os = "macos")]
-use core_foundation::runloop::CFRunLoop;
-#[cfg(target_os = "macos")]
-use core_graphics::event::{
-    CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
-    CGEventType, CallbackResult, EventField, KeyCode,
-};
-#[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::NSImage;
@@ -46,7 +39,6 @@ pub fn run() -> UiResult<()> {
 enum UserEvent {
     TrayIconEvent(TrayIconEvent),
     MenuEvent(MenuEvent),
-    ToggleRecording,
     WorkerEvent(WorkerEvent),
 }
 
@@ -83,9 +75,9 @@ pub struct WhisperingMvpApp {
 impl WhisperingMvpApp {
     fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
         let status = if has_accessibility_permission() {
-            "Ready. Left click the microphone in the menu bar or press the microphone key to dictate.".to_string()
+            "Ready. Left click the microphone in the menu bar to dictate.".to_string()
         } else {
-            "Ready. Left click or press the microphone key to dictate. Auto-paste will ask for Accessibility permission when needed.".to_string()
+            "Ready. Left click to dictate. Auto-paste will ask for Accessibility permission when needed.".to_string()
         };
 
         Self {
@@ -313,7 +305,6 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                         "Accessibility permission is needed for auto-paste. macOS settings were opened.",
                     );
                 }
-                start_microphone_key_monitor(self.proxy.clone());
             }
             Err(err) => {
                 eprintln!("[tray] failed to create tray icon: {err}");
@@ -331,7 +322,6 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
         self.model_manager.unload_if_idle();
 
         match event {
-            UserEvent::ToggleRecording => self.toggle_recording(),
             UserEvent::TrayIconEvent(TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
@@ -460,90 +450,6 @@ fn status_callback(proxy: EventLoopProxy<UserEvent>) -> StatusCallback {
         let _ = proxy.send_event(UserEvent::WorkerEvent(WorkerEvent::Status(status)));
     })
 }
-
-#[cfg(target_os = "macos")]
-fn start_microphone_key_monitor(proxy: EventLoopProxy<UserEvent>) {
-    thread::spawn(move || {
-        #[derive(Default)]
-        struct MicrophoneKeyState {
-            is_down: bool,
-            saw_other_key: bool,
-        }
-
-        let state = Arc::new(std::sync::Mutex::new(MicrophoneKeyState::default()));
-        let state_for_tap = state.clone();
-        let proxy_for_tap = proxy.clone();
-
-        let tap_result = CGEventTap::with_enabled(
-            CGEventTapLocation::HID,
-            CGEventTapPlacement::HeadInsertEventTap,
-            CGEventTapOptions::Default,
-            vec![CGEventType::KeyDown, CGEventType::KeyUp],
-            move |_proxy, event_type, event| {
-                let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
-                let is_f5 = keycode == i64::from(KeyCode::F5);
-                let has_modifiers = has_shortcut_modifiers(event.get_flags());
-
-                let Ok(mut state) = state_for_tap.lock() else {
-                    return CallbackResult::Keep;
-                };
-
-                match event_type {
-                    CGEventType::KeyDown if is_f5 => {
-                        let is_repeat =
-                            event.get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT)
-                                != 0;
-                        if !has_modifiers && !is_repeat {
-                            state.is_down = true;
-                            state.saw_other_key = false;
-                            return CallbackResult::Drop;
-                        }
-
-                        state.is_down = false;
-                        state.saw_other_key = false;
-                    }
-                    CGEventType::KeyDown => {
-                        if state.is_down {
-                            state.saw_other_key = true;
-                        }
-                    }
-                    CGEventType::KeyUp if is_f5 && state.is_down => {
-                        let should_toggle = !has_modifiers && !state.saw_other_key;
-                        state.is_down = false;
-                        state.saw_other_key = false;
-                        if should_toggle {
-                            let _ = proxy_for_tap.send_event(UserEvent::ToggleRecording);
-                            return CallbackResult::Drop;
-                        }
-                    }
-                    _ => {}
-                }
-
-                CallbackResult::Keep
-            },
-            || CFRunLoop::run_current(),
-        );
-
-        if tap_result.is_err() {
-            eprintln!("[shortcut] failed to install microphone/F5 event tap");
-        }
-    });
-}
-
-#[cfg(target_os = "macos")]
-fn has_shortcut_modifiers(flags: CGEventFlags) -> bool {
-    flags.intersects(
-        CGEventFlags::CGEventFlagAlphaShift
-            | CGEventFlags::CGEventFlagShift
-            | CGEventFlags::CGEventFlagControl
-            | CGEventFlags::CGEventFlagAlternate
-            | CGEventFlags::CGEventFlagCommand
-            | CGEventFlags::CGEventFlagSecondaryFn,
-    )
-}
-
-#[cfg(not(target_os = "macos"))]
-fn start_microphone_key_monitor(_proxy: EventLoopProxy<UserEvent>) {}
 
 fn icon_for_state(state: TrayVisualState) -> Icon {
     match state {
