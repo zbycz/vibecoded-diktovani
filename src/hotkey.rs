@@ -1,18 +1,16 @@
 #[cfg(target_os = "macos")]
 use std::{
+    ptr::NonNull,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 #[cfg(target_os = "macos")]
-use block::{Block, ConcreteBlock, RcBlock};
+use block2::RcBlock;
 #[cfg(target_os = "macos")]
-use cocoa::{
-    appkit::{NSEvent, NSEventMask, NSEventModifierFlags},
-    base::{id, nil},
-};
+use objc2::{rc::Retained, runtime::AnyObject};
 #[cfg(target_os = "macos")]
-use objc::{class, msg_send, sel, sel_impl};
+use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags};
 
 #[cfg(target_os = "macos")]
 const FN_KEYCODE: u16 = 63;
@@ -33,7 +31,7 @@ impl FnTapDetector {
             return false;
         }
 
-        let is_fn_down = modifier_flags.contains(NSEventModifierFlags::NSFunctionKeyMask);
+        let is_fn_down = modifier_flags.contains(NSEventModifierFlags::Function);
         let mut detected = false;
 
         if is_fn_down && !self.previous_fn_down {
@@ -57,13 +55,12 @@ impl FnTapDetector {
 
 #[cfg(target_os = "macos")]
 pub struct HotkeyMonitor {
-    _monitor: id,
-    _monitor_block: RcBlock<(id,), ()>,
+    _monitor: Retained<AnyObject>,
+    _monitor_handler: RcBlock<dyn Fn(NonNull<NSEvent>)>,
     _detector: Arc<Mutex<FnTapDetector>>,
 }
 
 #[cfg(target_os = "macos")]
-#[allow(deprecated, unexpected_cfgs)]
 pub fn install_double_fn_monitor(
     on_double_press: impl Fn() + Send + Sync + 'static,
 ) -> Result<HotkeyMonitor, String> {
@@ -72,35 +69,25 @@ pub fn install_double_fn_monitor(
     let on_double_press = Arc::new(on_double_press);
     let on_double_press_for_monitor = on_double_press.clone();
 
-    let monitor_block = ConcreteBlock::new(move |event: id| {
-        let key_code = unsafe { event.keyCode() };
-        let modifier_flags = unsafe { event.modifierFlags() };
+    let monitor_handler: RcBlock<dyn Fn(NonNull<NSEvent>)> =
+        RcBlock::new(move |event_ptr: NonNull<NSEvent>| {
+        let event = unsafe { event_ptr.as_ref() };
         let mut detector = detector_for_monitor
             .lock()
             .expect("Fn tap detector mutex poisoned");
 
-        if detector.register_event(key_code, modifier_flags) {
+        if detector.register_event(event.keyCode(), event.modifierFlags()) {
             on_double_press_for_monitor();
         }
-    })
-    .copy();
+    });
 
-    let handler: *const Block<(id,), ()> = &*monitor_block;
-    let monitor: id = unsafe {
-        msg_send![
-            class!(NSEvent),
-            addGlobalMonitorForEventsMatchingMask: NSEventMask::NSFlagsChangedMask.bits()
-            handler: handler
-        ]
-    };
-
-    if monitor == nil {
-        return Err("failed to install Fn double-press monitor".into());
-    }
+    let monitor =
+        NSEvent::addGlobalMonitorForEventsMatchingMask_handler(NSEventMask::FlagsChanged, &monitor_handler)
+            .ok_or_else(|| "failed to install Fn double-press monitor".to_string())?;
 
     Ok(HotkeyMonitor {
         _monitor: monitor,
-        _monitor_block: monitor_block,
+        _monitor_handler: monitor_handler,
         _detector: detector,
     })
 }
