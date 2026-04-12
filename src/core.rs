@@ -29,7 +29,9 @@ use thiserror::Error;
 use transcribe_rs::TranscriptionEngine;
 use transcribe_rs::engines::whisper::{WhisperEngine, WhisperInferenceParams};
 
-pub const MODEL_PATH: &str = "/Users/pavel/Library/Application Support/com.bradenwong.whispering/models/whisper/ggml-large-v3-turbo.bin";
+pub const MODEL_URL: &str =
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin";
+pub const MODEL_FILENAME: &str = "ggml-large-v3-turbo.bin";
 pub const LANGUAGE: &str = "cs";
 
 #[derive(Debug, Error)]
@@ -563,9 +565,13 @@ impl ModelManager {
 
     pub fn preload_whisper(&self) -> Result<()> {
         let started_at = Instant::now();
-        println!("[preload] starting Whisper preload from {MODEL_PATH}");
+        let model_path = ensure_model_available()?;
+        println!(
+            "[preload] starting Whisper preload from {}",
+            model_path.display()
+        );
 
-        let (_, loaded_now) = self.get_or_load_whisper(PathBuf::from(MODEL_PATH))?;
+        let (_, loaded_now) = self.get_or_load_whisper(model_path)?;
         let elapsed = started_at.elapsed();
 
         if loaded_now {
@@ -714,15 +720,17 @@ pub fn transcribe_wav_file(model_manager: &ModelManager, file_path: &PathBuf) ->
     }
 
     let model_ready_started_at = Instant::now();
-    let (engine_arc, loaded_now) = model_manager.get_or_load_whisper(PathBuf::from(MODEL_PATH))?;
+    let model_path = ensure_model_available()?;
+    let (engine_arc, loaded_now) = model_manager.get_or_load_whisper(model_path.clone())?;
     println!(
-        "[transcribe] model {} in {:.2}s",
+        "[transcribe] model {} in {:.2}s ({})",
         if loaded_now {
             "loaded on demand"
         } else {
             "was already warm"
         },
-        model_ready_started_at.elapsed().as_secs_f32()
+        model_ready_started_at.elapsed().as_secs_f32(),
+        model_path.display()
     );
 
     let mut params = WhisperInferenceParams::default();
@@ -757,6 +765,67 @@ pub fn transcribe_wav_file(model_manager: &ModelManager, file_path: &PathBuf) ->
     );
 
     Ok(transcript)
+}
+
+fn ensure_model_available() -> Result<PathBuf> {
+    let model_path = cache_model_path()?;
+
+    if let Ok(metadata) = std::fs::metadata(&model_path)
+        && metadata.len() > 0
+    {
+        println!("[model] using cached model {}", model_path.display());
+        return Ok(model_path);
+    }
+
+    let cache_dir = model_path
+        .parent()
+        .ok_or_else(|| AppError::Message("Model cache path is missing a parent directory.".into()))?;
+    std::fs::create_dir_all(cache_dir)?;
+
+    let partial_path = cache_dir.join(format!("{MODEL_FILENAME}.partial"));
+    if partial_path.exists() {
+        std::fs::remove_file(&partial_path)?;
+    }
+
+    let started_at = Instant::now();
+    println!(
+        "[model] downloading Whisper model from {} to {}",
+        MODEL_URL,
+        model_path.display()
+    );
+
+    let status = Command::new("curl")
+        .args(["-L", "--fail", "--progress-bar", MODEL_URL, "-o"])
+        .arg(&partial_path)
+        .status()
+        .map_err(|err| AppError::Message(format!("Failed to start curl for model download: {err}")))?;
+
+    if !status.success() {
+        let _ = std::fs::remove_file(&partial_path);
+        return Err(AppError::Message(format!(
+            "Model download failed with status {status}."
+        )));
+    }
+
+    std::fs::rename(&partial_path, &model_path)?;
+    println!(
+        "[model] download finished in {:.2}s: {}",
+        started_at.elapsed().as_secs_f32(),
+        model_path.display()
+    );
+
+    Ok(model_path)
+}
+
+fn cache_model_path() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME").ok_or_else(|| {
+        AppError::Message("HOME is not set, cannot resolve ~/.cache/diktovani.".into())
+    })?;
+
+    Ok(PathBuf::from(home)
+        .join(".cache")
+        .join("diktovani")
+        .join(MODEL_FILENAME))
 }
 
 fn extract_whisper_samples_from_wav(audio_data: Vec<u8>) -> Result<Vec<f32>> {
