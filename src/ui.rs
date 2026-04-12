@@ -83,6 +83,12 @@ impl WhisperingMvpApp {
 
         match self.recorder.start_new_recording() {
             Ok(()) => {
+                let model_manager = self.model_manager.clone();
+                thread::spawn(move || {
+                    if let Err(err) = model_manager.preload_whisper() {
+                        eprintln!("[preload] failed: {err}");
+                    }
+                });
                 self.status = "Recording... click the button again to stop and transcribe.".into();
             }
             Err(err) => {

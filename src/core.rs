@@ -504,7 +504,10 @@ impl ModelManager {
         }
     }
 
-    fn get_or_load_whisper(&self, model_path: PathBuf) -> Result<Arc<Mutex<Option<Engine>>>> {
+    fn get_or_load_whisper(
+        &self,
+        model_path: PathBuf,
+    ) -> Result<(Arc<Mutex<Option<Engine>>>, bool)> {
         let mut engine_guard = self
             .engine
             .lock()
@@ -540,7 +543,29 @@ impl ModelManager {
             .map_err(|e| AppError::Message(format!("Last activity mutex poisoned: {e}")))?;
         *last_activity_guard = SystemTime::now();
 
-        Ok(self.engine.clone())
+        Ok((self.engine.clone(), needs_load))
+    }
+
+    pub fn preload_whisper(&self) -> Result<()> {
+        let started_at = Instant::now();
+        println!("[preload] starting Whisper preload from {MODEL_PATH}");
+
+        let (_, loaded_now) = self.get_or_load_whisper(PathBuf::from(MODEL_PATH))?;
+        let elapsed = started_at.elapsed();
+
+        if loaded_now {
+            println!(
+                "[preload] Whisper model loaded in {:.2}s",
+                elapsed.as_secs_f32()
+            );
+        } else {
+            println!(
+                "[preload] Whisper model already warm (checked in {:.2}s)",
+                elapsed.as_secs_f32()
+            );
+        }
+
+        Ok(())
     }
 
     pub fn unload_if_idle(&self) {
@@ -568,13 +593,37 @@ impl ModelManager {
 }
 
 pub fn transcribe_wav_file(model_manager: &ModelManager, file_path: &PathBuf) -> Result<String> {
+    let total_started_at = Instant::now();
+    println!("[transcribe] reading audio from {}", file_path.display());
     let audio_data = std::fs::read(file_path)?;
+
+    let sample_extract_started_at = Instant::now();
     let samples = extract_whisper_samples_from_wav(audio_data)?;
+    println!(
+        "[transcribe] prepared {} samples in {:.2}s",
+        samples.len(),
+        sample_extract_started_at.elapsed().as_secs_f32()
+    );
     if samples.is_empty() {
+        println!(
+            "[transcribe] no samples found, finishing in {:.2}s",
+            total_started_at.elapsed().as_secs_f32()
+        );
         return Ok(String::new());
     }
 
-    let engine_arc = model_manager.get_or_load_whisper(PathBuf::from(MODEL_PATH))?;
+    let model_ready_started_at = Instant::now();
+    let (engine_arc, loaded_now) = model_manager.get_or_load_whisper(PathBuf::from(MODEL_PATH))?;
+    println!(
+        "[transcribe] model {} in {:.2}s",
+        if loaded_now {
+            "loaded on demand"
+        } else {
+            "was already warm"
+        },
+        model_ready_started_at.elapsed().as_secs_f32()
+    );
+
     let mut params = WhisperInferenceParams::default();
     params.language = Some(LANGUAGE.to_string());
     params.print_special = false;
@@ -592,10 +641,21 @@ pub fn transcribe_wav_file(model_manager: &ModelManager, file_path: &PathBuf) ->
         .as_mut()
         .ok_or_else(|| AppError::Message("Whisper model is not loaded.".into()))?;
     let Engine::Whisper(whisper_engine) = engine;
+
+    let inference_started_at = Instant::now();
     let result = whisper_engine
         .transcribe_samples(samples, Some(params))
         .map_err(|e| AppError::Message(format!("Transcription failed: {e}")))?;
-    Ok(result.text.trim().to_string())
+    let transcript = result.text.trim().to_string();
+
+    println!(
+        "[transcribe] inference finished in {:.2}s, transcript chars={}, total {:.2}s",
+        inference_started_at.elapsed().as_secs_f32(),
+        transcript.len(),
+        total_started_at.elapsed().as_secs_f32()
+    );
+
+    Ok(transcript)
 }
 
 fn extract_whisper_samples_from_wav(audio_data: Vec<u8>) -> Result<Vec<f32>> {
