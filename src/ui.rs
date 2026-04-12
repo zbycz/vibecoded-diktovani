@@ -102,8 +102,8 @@ impl WhisperingMvpApp {
         );
         let status_item = MenuItem::new(status_menu_text(&self.status), false, None);
         let quit_item = MenuItem::new("Quit", true, None);
-        menu.append(&launch_at_login_item)?;
         menu.append(&status_item)?;
+        menu.append(&launch_at_login_item)?;
         menu.append(&quit_item)?;
 
         let tray_icon = TrayIconBuilder::new()
