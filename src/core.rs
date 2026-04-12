@@ -782,6 +782,12 @@ pub fn set_launch_at_login(enabled: bool) -> Result<()> {
     }
 }
 
+pub fn ensure_model_cached(status_callback: Option<&StatusCallback>) -> Result<()> {
+    let model_path = ensure_model_available(status_callback)?;
+    println!("[model] cache ready {}", model_path.display());
+    Ok(())
+}
+
 pub fn transcribe_wav_file(
     model_manager: &ModelManager,
     file_path: &PathBuf,
@@ -843,7 +849,7 @@ pub fn transcribe_wav_file(
     let result = whisper_engine
         .transcribe_samples(samples, Some(params))
         .map_err(|e| AppError::Message(format!("Transcription failed: {e}")))?;
-    let transcript = result.text.trim().to_string();
+    let transcript = strip_trailing_subtitle_credit(result.text.trim());
 
     println!(
         "[transcribe] inference finished in {:.2}s, transcript chars={}, total {:.2}s",
@@ -892,7 +898,7 @@ fn ensure_model_available(status_callback: Option<&StatusCallback>) -> Result<Pa
     }
 
     std::fs::rename(&partial_path, &model_path)?;
-    emit_status(status_callback, "Model download complete. Loading...");
+    emit_status(status_callback, "Model download complete.");
     println!(
         "[model] download finished in {:.2}s: {}",
         started_at.elapsed().as_secs_f32(),
@@ -1000,6 +1006,27 @@ fn format_eta(duration: Duration) -> String {
     } else {
         format!("{seconds}s")
     }
+}
+
+fn strip_trailing_subtitle_credit(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let sentence_start = trimmed
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| matches!(ch, '.' | '!' | '?' | '\n'))
+        .map(|(index, ch)| index + ch.len_utf8())
+        .unwrap_or(0);
+
+    let last_sentence_lower = trimmed[sentence_start..].trim_start().to_lowercase();
+    if !last_sentence_lower.contains("titulky vytvořil ") {
+        return trimmed.to_string();
+    }
+
+    trimmed[..sentence_start].trim_end().to_string()
 }
 
 #[cfg(target_os = "macos")]

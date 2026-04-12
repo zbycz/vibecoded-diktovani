@@ -1,5 +1,5 @@
 use crate::core::{
-    ModelManager, RecorderState, StatusCallback, copy_and_paste_text,
+    ModelManager, RecorderState, StatusCallback, copy_and_paste_text, ensure_model_cached,
     has_accessibility_permission, is_launch_at_login_enabled, set_launch_at_login,
     transcribe_wav_file, request_accessibility_permission_if_needed,
 };
@@ -262,6 +262,14 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                 self.status_item = Some(status_item);
                 self.quit_item = Some(quit_item);
                 self.refresh_tray(TrayVisualState::Idle);
+
+                let status_callback = status_callback(self.proxy.clone());
+                thread::spawn(move || {
+                    if let Err(err) = ensure_model_cached(Some(&status_callback)) {
+                        status_callback(format!("Model download failed: {err}"));
+                    }
+                });
+
                 if !request_accessibility_permission_if_needed() {
                     self.set_status(
                         "Accessibility permission is needed for auto-paste. macOS settings were opened.",
