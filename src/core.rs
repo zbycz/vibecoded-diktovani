@@ -1,11 +1,26 @@
+#[cfg(target_os = "macos")]
+use accessibility_sys::{
+    AXIsProcessTrusted, AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt,
+};
+use arboard::Clipboard;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream};
+#[cfg(target_os = "macos")]
+use core_foundation::base::TCFType;
+#[cfg(target_os = "macos")]
+use core_foundation::boolean::CFBoolean;
+#[cfg(target_os = "macos")]
+use core_foundation::dictionary::CFDictionary;
+#[cfg(target_os = "macos")]
+use core_foundation::string::CFString;
+use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
 use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
@@ -590,6 +605,92 @@ impl ModelManager {
             *current_model_path = None;
         }
     }
+}
+
+pub fn has_accessibility_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    unsafe { AXIsProcessTrusted() }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn prompt_accessibility_permission() {
+    let key = unsafe { CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt) };
+    let value = CFBoolean::true_value();
+    let options = CFDictionary::from_CFType_pairs(&[(key.as_CFType(), value.as_CFType())]);
+
+    unsafe {
+        let _ = AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef());
+    }
+
+    if let Err(err) =
+        Command::new("open").arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility").status()
+    {
+        eprintln!("[accessibility] failed to open System Settings: {err}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn prompt_accessibility_permission() {}
+
+pub fn copy_and_paste_text(text: &str) -> Result<()> {
+    if text.trim().is_empty() {
+        return Ok(());
+    }
+
+    if !has_accessibility_permission() {
+        prompt_accessibility_permission();
+        return Err(AppError::Message(
+            "Accessibility permission is required for auto-paste. Enable Diktovani in System Settings > Privacy & Security > Accessibility.".into(),
+        ));
+    }
+
+    let mut clipboard = Clipboard::new()
+        .map_err(|e| AppError::Message(format!("Failed to access clipboard: {e}")))?;
+    let original_clipboard = clipboard.get_text().ok();
+
+    clipboard
+        .set_text(text.to_string())
+        .map_err(|e| AppError::Message(format!("Failed to write transcript to clipboard: {e}")))?;
+
+    thread::sleep(Duration::from_millis(50));
+
+    let mut enigo = Enigo::new(&Settings::default())
+        .map_err(|e| AppError::Message(format!("Failed to initialize input automation: {e}")))?;
+
+    #[cfg(target_os = "macos")]
+    let (modifier, v_key) = (Key::Meta, Key::Other(9));
+    #[cfg(target_os = "windows")]
+    let (modifier, v_key) = (Key::Control, Key::Other(0x56));
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let (modifier, v_key) = (Key::Control, Key::Unicode('v'));
+
+    enigo
+        .key(modifier, Direction::Press)
+        .map_err(|e| AppError::Message(format!("Failed to press modifier key: {e}")))?;
+    enigo
+        .key(v_key, Direction::Press)
+        .map_err(|e| AppError::Message(format!("Failed to press paste key: {e}")))?;
+    enigo
+        .key(v_key, Direction::Release)
+        .map_err(|e| AppError::Message(format!("Failed to release paste key: {e}")))?;
+    enigo
+        .key(modifier, Direction::Release)
+        .map_err(|e| AppError::Message(format!("Failed to release modifier key: {e}")))?;
+
+    thread::sleep(Duration::from_millis(100));
+
+    if let Some(original_clipboard) = original_clipboard
+        && let Err(err) = clipboard.set_text(original_clipboard)
+    {
+        eprintln!("[clipboard] failed to restore original clipboard text: {err}");
+    }
+
+    Ok(())
 }
 
 pub fn transcribe_wav_file(model_manager: &ModelManager, file_path: &PathBuf) -> Result<String> {

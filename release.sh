@@ -89,3 +89,4 @@ EOF
 codesign --force --deep --sign - "$APP_DIR"
 
 echo "Built ${APP_DIR}"
+echo "Auto-paste on macOS requires Accessibility permission for ${APP_IDENTIFIER} in System Settings > Privacy & Security > Accessibility."
