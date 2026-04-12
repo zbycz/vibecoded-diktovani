@@ -2,6 +2,12 @@ use crate::core::{
     ModelManager, RecorderState, copy_and_paste_text, has_accessibility_permission,
     transcribe_wav_file,
 };
+#[cfg(target_os = "macos")]
+use objc2::MainThreadMarker;
+#[cfg(target_os = "macos")]
+use objc2_app_kit::NSImage;
+#[cfg(target_os = "macos")]
+use objc2_foundation::NSString;
 use std::thread;
 use std::time::{Duration, Instant};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
@@ -114,6 +120,11 @@ impl WhisperingMvpApp {
         }
         if let Some(status_item) = self.status_item.as_ref() {
             status_item.set_text(status_menu_text(&self.status));
+        }
+        if matches!(state, TrayVisualState::Idle | TrayVisualState::Recording)
+            && apply_macos_microphone_symbol(tray_icon)
+        {
+            return;
         }
         if let Err(err) = tray_icon.set_icon_with_as_template(Some(icon_for_state(state)), true) {
             eprintln!("[tray] failed to update icon: {err}");
@@ -331,6 +342,36 @@ fn load_microphone_icon() -> Icon {
     .into_rgba8();
     let (width, height) = image.dimensions();
     Icon::from_rgba(image.into_raw(), width, height).expect("valid embedded tray icon")
+}
+
+#[cfg(target_os = "macos")]
+fn apply_macos_microphone_symbol(tray_icon: &TrayIcon) -> bool {
+    let Some(status_item) = tray_icon.ns_status_item() else {
+        return false;
+    };
+    let Some(mtm) = MainThreadMarker::new() else {
+        return false;
+    };
+    let Some(button) = status_item.button(mtm) else {
+        return false;
+    };
+
+    let symbol_name = NSString::from_str("mic.fill");
+    let description = NSString::from_str("Microphone");
+    let Some(image) =
+        NSImage::imageWithSystemSymbolName_accessibilityDescription(&symbol_name, Some(&description))
+    else {
+        return false;
+    };
+
+    image.setTemplate(true);
+    button.setImage(Some(&image));
+    true
+}
+
+#[cfg(not(target_os = "macos"))]
+fn apply_macos_microphone_symbol(_tray_icon: &TrayIcon) -> bool {
+    false
 }
 
 fn draw_spinner_icon(phase: usize) -> Icon {
