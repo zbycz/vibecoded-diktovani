@@ -4,6 +4,7 @@ use crate::core::{
 };
 use std::thread;
 use std::time::{Duration, Instant};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::application::ApplicationHandler;
 use winit::event::StartCause;
@@ -17,6 +18,10 @@ pub fn run() -> UiResult<()> {
     TrayIconEvent::set_event_handler(Some(move |event| {
         let _ = tray_proxy.send_event(UserEvent::TrayIconEvent(event));
     }));
+    let menu_proxy = event_loop.create_proxy();
+    MenuEvent::set_event_handler(Some(move |event| {
+        let _ = menu_proxy.send_event(UserEvent::MenuEvent(event));
+    }));
 
     let mut app = WhisperingMvpApp::new(event_loop.create_proxy());
     event_loop.run_app(&mut app)?;
@@ -25,6 +30,7 @@ pub fn run() -> UiResult<()> {
 
 enum UserEvent {
     TrayIconEvent(TrayIconEvent),
+    MenuEvent(MenuEvent),
     WorkerEvent(WorkerEvent),
 }
 
@@ -43,6 +49,8 @@ enum TrayVisualState {
 pub struct WhisperingMvpApp {
     proxy: EventLoopProxy<UserEvent>,
     tray_icon: Option<TrayIcon>,
+    status_item: Option<MenuItem>,
+    quit_item: Option<MenuItem>,
     recorder: RecorderState,
     model_manager: ModelManager,
     status: String,
@@ -62,6 +70,8 @@ impl WhisperingMvpApp {
         Self {
             proxy,
             tray_icon: None,
+            status_item: None,
+            quit_item: None,
             recorder: RecorderState::new(),
             model_manager: ModelManager::new(),
             status,
@@ -71,14 +81,23 @@ impl WhisperingMvpApp {
         }
     }
 
-    fn build_tray_icon(&self) -> UiResult<TrayIcon> {
-        Ok(TrayIconBuilder::new()
+    fn build_tray_icon(&self) -> UiResult<(TrayIcon, MenuItem, MenuItem)> {
+        let menu = Menu::new();
+        let status_item = MenuItem::new(status_menu_text(&self.status), false, None);
+        let quit_item = MenuItem::new("Quit", true, None);
+        menu.append(&status_item)?;
+        menu.append(&quit_item)?;
+
+        let tray_icon = TrayIconBuilder::new()
             .with_tooltip(self.tooltip())
             .with_icon(icon_for_state(TrayVisualState::Idle))
+            .with_menu(Box::new(menu))
             .with_icon_as_template(true)
             .with_menu_on_left_click(false)
-            .with_menu_on_right_click(false)
-            .build()?)
+            .with_menu_on_right_click(true)
+            .build()?;
+
+        Ok((tray_icon, status_item, quit_item))
     }
 
     fn tooltip(&self) -> String {
@@ -92,6 +111,9 @@ impl WhisperingMvpApp {
 
         if let Err(err) = tray_icon.set_tooltip(Some(self.tooltip())) {
             eprintln!("[tray] failed to update tooltip: {err}");
+        }
+        if let Some(status_item) = self.status_item.as_ref() {
+            status_item.set_text(status_menu_text(&self.status));
         }
         if let Err(err) = tray_icon.set_icon_with_as_template(Some(icon_for_state(state)), true) {
             eprintln!("[tray] failed to update icon: {err}");
@@ -205,8 +227,10 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
         }
 
         match self.build_tray_icon() {
-            Ok(tray_icon) => {
+            Ok((tray_icon, status_item, quit_item)) => {
                 self.tray_icon = Some(tray_icon);
+                self.status_item = Some(status_item);
+                self.quit_item = Some(quit_item);
                 self.refresh_tray(TrayVisualState::Idle);
             }
             Err(err) => {
@@ -221,7 +245,7 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         self.model_manager.unload_if_idle();
 
         match event {
@@ -231,6 +255,11 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                 ..
             }) => self.toggle_recording(),
             UserEvent::TrayIconEvent(_) => {}
+            UserEvent::MenuEvent(event) => {
+                if self.quit_item.as_ref().is_some_and(|item| event.id == *item.id()) {
+                    event_loop.exit();
+                }
+            }
             UserEvent::WorkerEvent(event) => {
                 self.is_transcribing = false;
                 self.spinner_phase = 0;
@@ -275,6 +304,15 @@ fn preview_text(text: &str) -> String {
         preview.push_str("...");
     }
     format!("Last transcript: {preview}")
+}
+
+fn status_menu_text(status: &str) -> String {
+    let compact = status.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut text = compact.chars().take(80).collect::<String>();
+    if compact.chars().count() > 80 {
+        text.push_str("...");
+    }
+    format!("Status: {text}")
 }
 
 fn icon_for_state(state: TrayVisualState) -> Icon {
