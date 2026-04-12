@@ -321,7 +321,7 @@ fn icon_for_state(state: TrayVisualState) -> Icon {
     let mut rgba = vec![0u8; width * height * 4];
 
     match state {
-        TrayVisualState::Idle => draw_microphone(&mut rgba, width, height, false),
+        TrayVisualState::Idle => draw_microphone(&mut rgba, width, height, true),
         TrayVisualState::Recording => draw_microphone(&mut rgba, width, height, true),
         TrayVisualState::Transcribing(phase) => draw_spinner(&mut rgba, width, height, phase),
     }
