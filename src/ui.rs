@@ -49,6 +49,7 @@ enum WorkerEvent {
     Failed(String),
 }
 
+#[derive(Clone, Copy)]
 enum TrayVisualState {
     Idle,
     Recording,
@@ -133,8 +134,7 @@ impl WhisperingMvpApp {
         if let Some(status_item) = self.status_item.as_ref() {
             status_item.set_text(status_menu_text(&self.status));
         }
-        if matches!(state, TrayVisualState::Idle | TrayVisualState::Recording)
-            && apply_macos_microphone_symbol(tray_icon)
+        if apply_macos_symbol(tray_icon, state)
         {
             return;
         }
@@ -400,7 +400,8 @@ fn status_callback(proxy: EventLoopProxy<UserEvent>) -> StatusCallback {
 
 fn icon_for_state(state: TrayVisualState) -> Icon {
     match state {
-        TrayVisualState::Idle | TrayVisualState::Recording => load_microphone_icon(),
+        TrayVisualState::Idle => load_microphone_icon(),
+        TrayVisualState::Recording => draw_checkmark_icon(),
         TrayVisualState::Transcribing(phase) => draw_spinner_icon(phase),
     }
 }
@@ -417,7 +418,7 @@ fn load_microphone_icon() -> Icon {
 }
 
 #[cfg(target_os = "macos")]
-fn apply_macos_microphone_symbol(tray_icon: &TrayIcon) -> bool {
+fn apply_macos_symbol(tray_icon: &TrayIcon, state: TrayVisualState) -> bool {
     let Some(status_item) = tray_icon.ns_status_item() else {
         return false;
     };
@@ -428,8 +429,13 @@ fn apply_macos_microphone_symbol(tray_icon: &TrayIcon) -> bool {
         return false;
     };
 
-    let symbol_name = NSString::from_str("mic.fill");
-    let description = NSString::from_str("Microphone");
+    let (symbol_name, description) = match state {
+        TrayVisualState::Idle => ("mic.fill", "Microphone"),
+        TrayVisualState::Recording => ("checkmark", "Stop recording"),
+        TrayVisualState::Transcribing(_) => return false,
+    };
+    let symbol_name = NSString::from_str(symbol_name);
+    let description = NSString::from_str(description);
     let Some(image) =
         NSImage::imageWithSystemSymbolName_accessibilityDescription(&symbol_name, Some(&description))
     else {
@@ -442,8 +448,28 @@ fn apply_macos_microphone_symbol(tray_icon: &TrayIcon) -> bool {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn apply_macos_microphone_symbol(_tray_icon: &TrayIcon) -> bool {
+fn apply_macos_symbol(_tray_icon: &TrayIcon, _state: TrayVisualState) -> bool {
     false
+}
+
+fn draw_checkmark_icon() -> Icon {
+    let width = 32;
+    let height = 32;
+    let mut rgba = vec![0u8; width * height * 4];
+
+    for offset in 0..6 {
+        let x = 8 + offset;
+        let y = 17 + offset;
+        draw_stroke(&mut rgba, width, x, y, 2);
+    }
+
+    for offset in 0..12 {
+        let x = 13 + offset;
+        let y = 22 - offset;
+        draw_stroke(&mut rgba, width, x, y, 2);
+    }
+
+    Icon::from_rgba(rgba, width as u32, height as u32).expect("valid checkmark tray icon")
 }
 
 fn draw_spinner_icon(phase: usize) -> Icon {
@@ -466,6 +492,19 @@ fn draw_spinner_icon(phase: usize) -> Icon {
     }
 
     Icon::from_rgba(rgba, width as u32, height as u32).expect("valid spinner tray icon")
+}
+
+fn draw_stroke(rgba: &mut [u8], width: usize, x: usize, y: usize, radius: usize) {
+    let start_x = x.saturating_sub(radius);
+    let start_y = y.saturating_sub(radius);
+    let end_x = (x + radius).min(width - 1);
+    let end_y = (y + radius).min((rgba.len() / 4 / width).saturating_sub(1));
+
+    for py in start_y..=end_y {
+        for px in start_x..=end_x {
+            set_pixel(rgba, width, px, py, 0, 0, 0, 255);
+        }
+    }
 }
 
 fn draw_filled_circle(
