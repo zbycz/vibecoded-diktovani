@@ -8,6 +8,8 @@ cd "$ROOT_DIR"
 BIN_NAME="whispering-mvp"
 APP_NAME="Diktovani"
 VERSION="${APP_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)}"
+APP_IDENTIFIER="${APP_IDENTIFIER:-com.example.diktovani}"
+MICROPHONE_USAGE_DESCRIPTION="${MICROPHONE_USAGE_DESCRIPTION:-Diktovani needs microphone access to record your speech for local transcription.}"
 APP_DIR="target/release/bundle/${APP_NAME}.app"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
@@ -65,7 +67,7 @@ cat > "${CONTENTS_DIR}/Info.plist" <<EOF
     <key>CFBundleIconFile</key>
     <string>${ICON_NAME}.icns</string>
     <key>CFBundleIdentifier</key>
-    <string>com.example.${APP_NAME}</string>
+    <string>${APP_IDENTIFIER}</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -76,10 +78,14 @@ cat > "${CONTENTS_DIR}/Info.plist" <<EOF
     <string>${VERSION}</string>
     <key>CFBundleVersion</key>
     <string>${VERSION}</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>${MICROPHONE_USAGE_DESCRIPTION}</string>
     <key>LSUIElement</key>
     <true/>
 </dict>
 </plist>
 EOF
+
+codesign --force --deep --sign - "$APP_DIR"
 
 echo "Built ${APP_DIR}"
