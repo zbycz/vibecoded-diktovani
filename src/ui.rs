@@ -4,12 +4,19 @@ use crate::core::{
     transcribe_wav_file, request_accessibility_permission_if_needed,
 };
 #[cfg(target_os = "macos")]
+use core_graphics::event::{
+    CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
+    CGEventType, CallbackResult, EventField,
+};
+#[cfg(target_os = "macos")]
+use core_foundation::runloop::CFRunLoop;
+#[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::NSImage;
 #[cfg(target_os = "macos")]
 use objc2_foundation::NSString;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem};
@@ -39,6 +46,7 @@ pub fn run() -> UiResult<()> {
 enum UserEvent {
     TrayIconEvent(TrayIconEvent),
     MenuEvent(MenuEvent),
+    ToggleRecording,
     WorkerEvent(WorkerEvent),
 }
 
@@ -262,6 +270,7 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                 self.status_item = Some(status_item);
                 self.quit_item = Some(quit_item);
                 self.refresh_tray(TrayVisualState::Idle);
+                start_fn_key_monitor(self.proxy.clone());
                 if !request_accessibility_permission_if_needed() {
                     self.set_status(
                         "Accessibility permission is needed for auto-paste. macOS settings were opened.",
@@ -284,6 +293,7 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
         self.model_manager.unload_if_idle();
 
         match event {
+            UserEvent::ToggleRecording => self.toggle_recording(),
             UserEvent::TrayIconEvent(TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
@@ -389,6 +399,76 @@ fn status_callback(proxy: EventLoopProxy<UserEvent>) -> StatusCallback {
         let _ = proxy.send_event(UserEvent::WorkerEvent(WorkerEvent::Status(status)));
     })
 }
+
+#[cfg(target_os = "macos")]
+fn start_fn_key_monitor(proxy: EventLoopProxy<UserEvent>) {
+    thread::spawn(move || {
+        #[derive(Default)]
+        struct FnKeyState {
+            is_down: bool,
+            saw_other_key: bool,
+        }
+
+        let state = Arc::new(Mutex::new(FnKeyState::default()));
+        let state_for_tap = state.clone();
+        let proxy_for_tap = proxy.clone();
+
+        let tap_result = CGEventTap::with_enabled(
+            CGEventTapLocation::HID,
+            CGEventTapPlacement::HeadInsertEventTap,
+            CGEventTapOptions::ListenOnly,
+            vec![
+                CGEventType::FlagsChanged,
+                CGEventType::KeyDown,
+                CGEventType::KeyUp,
+            ],
+            move |_proxy, event_type, event| {
+                let Ok(mut state) = state_for_tap.lock() else {
+                    return CallbackResult::Keep;
+                };
+
+                match event_type {
+                    CGEventType::FlagsChanged => {
+                        let flags = event.get_flags();
+                        let fn_active = flags.contains(CGEventFlags::CGEventFlagSecondaryFn);
+                        let fn_only = flags == CGEventFlags::CGEventFlagSecondaryFn;
+
+                        if fn_active && !state.is_down {
+                            state.is_down = true;
+                            state.saw_other_key = false;
+                        } else if fn_active && state.is_down && !fn_only {
+                            state.saw_other_key = true;
+                        } else if !fn_active && state.is_down {
+                            let should_toggle = !state.saw_other_key;
+                            state.is_down = false;
+                            state.saw_other_key = false;
+                            if should_toggle {
+                                let _ = proxy_for_tap.send_event(UserEvent::ToggleRecording);
+                            }
+                        }
+                    }
+                    CGEventType::KeyDown | CGEventType::KeyUp => {
+                        let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
+                        if state.is_down && keycode != 63 {
+                            state.saw_other_key = true;
+                        }
+                    }
+                    _ => {}
+                }
+
+                CallbackResult::Keep
+            },
+            || CFRunLoop::run_current(),
+        );
+
+        if tap_result.is_err() {
+            eprintln!("[shortcut] failed to install Fn/Globe event tap");
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn start_fn_key_monitor(_proxy: EventLoopProxy<UserEvent>) {}
 
 fn icon_for_state(state: TrayVisualState) -> Icon {
     match state {
