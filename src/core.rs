@@ -1027,19 +1027,69 @@ fn strip_trailing_subtitle_credit(text: &str) -> String {
         return String::new();
     }
 
-    let sentence_start = trimmed
+    let without_trailing_sentence_punctuation =
+        trimmed.trim_end_matches(|ch: char| matches!(ch, '.' | '!' | '?') || ch.is_whitespace());
+
+    let sentence_start = without_trailing_sentence_punctuation
         .char_indices()
         .rev()
         .find(|(_, ch)| matches!(ch, '.' | '!' | '?' | '\n'))
         .map(|(index, ch)| index + ch.len_utf8())
         .unwrap_or(0);
 
-    let last_sentence_lower = trimmed[sentence_start..].trim_start().to_lowercase();
+    let last_sentence_lower = without_trailing_sentence_punctuation[sentence_start..]
+        .trim_start()
+        .to_lowercase();
     if !last_sentence_lower.contains("titulky vytvořil ") {
         return trimmed.to_string();
     }
 
     trimmed[..sentence_start].trim_end().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_trailing_subtitle_credit;
+
+    #[test]
+    fn strips_credit_with_trailing_period() {
+        assert_eq!(
+            strip_trailing_subtitle_credit("Ahoj. Titulky vytvořil JohnyX."),
+            "Ahoj."
+        );
+    }
+
+    #[test]
+    fn strips_credit_without_trailing_period() {
+        assert_eq!(
+            strip_trailing_subtitle_credit("Ahoj. Titulky vytvořil JohnyX"),
+            "Ahoj."
+        );
+    }
+
+    #[test]
+    fn strips_credit_when_it_is_only_sentence() {
+        assert_eq!(
+            strip_trailing_subtitle_credit("Titulky vytvořil JohnyX."),
+            ""
+        );
+    }
+
+    #[test]
+    fn leaves_other_last_sentence_untouched() {
+        assert_eq!(
+            strip_trailing_subtitle_credit("Ahoj. To je vsechno."),
+            "Ahoj. To je vsechno."
+        );
+    }
+
+    #[test]
+    fn strips_credit_case_insensitively() {
+        assert_eq!(
+            strip_trailing_subtitle_credit("Ahoj.\nTITULKY VYTVOŘIL JohnyX"),
+            "Ahoj."
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
