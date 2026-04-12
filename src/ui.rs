@@ -316,40 +316,27 @@ fn status_menu_text(status: &str) -> String {
 }
 
 fn icon_for_state(state: TrayVisualState) -> Icon {
+    match state {
+        TrayVisualState::Idle | TrayVisualState::Recording => load_microphone_icon(),
+        TrayVisualState::Transcribing(phase) => draw_spinner_icon(phase),
+    }
+}
+
+fn load_microphone_icon() -> Icon {
+    let image = image::load_from_memory_with_format(
+        include_bytes!("../assets/AppIcon.appiconset/icon_32x32.png"),
+        image::ImageFormat::Png,
+    )
+    .expect("embedded microphone icon should decode")
+    .into_rgba8();
+    let (width, height) = image.dimensions();
+    Icon::from_rgba(image.into_raw(), width, height).expect("valid embedded tray icon")
+}
+
+fn draw_spinner_icon(phase: usize) -> Icon {
     let width = 32;
     let height = 32;
     let mut rgba = vec![0u8; width * height * 4];
-
-    match state {
-        TrayVisualState::Idle => draw_microphone(&mut rgba, width, height, true),
-        TrayVisualState::Recording => draw_microphone(&mut rgba, width, height, true),
-        TrayVisualState::Transcribing(phase) => draw_spinner(&mut rgba, width, height, phase),
-    }
-
-    Icon::from_rgba(rgba, width as u32, height as u32).expect("valid tray icon")
-}
-
-fn draw_microphone(rgba: &mut [u8], width: usize, height: usize, filled: bool) {
-    for y in 0..height as i32 {
-        for x in 0..width as i32 {
-            let dx = x - 16;
-            let dy = y - 11;
-            let head = dx * dx + dy * dy <= 36;
-            let body = (13..=19).contains(&x) && (11..=19).contains(&y);
-            let stem = (15..=17).contains(&x) && (20..=25).contains(&y);
-            let base = (11..=21).contains(&x) && (25..=27).contains(&y);
-
-            if head || body || stem || base {
-                if !filled && y < 18 && x > 13 && x < 19 && head {
-                    continue;
-                }
-                set_pixel(rgba, width, x as usize, y as usize, 0, 0, 0, 255);
-            }
-        }
-    }
-}
-
-fn draw_spinner(rgba: &mut [u8], width: usize, height: usize, phase: usize) {
     let center_x = 16.0f32;
     let center_y = 16.0f32;
     let radius = 10.0f32;
@@ -362,8 +349,10 @@ fn draw_spinner(rgba: &mut [u8], width: usize, height: usize, phase: usize) {
         let intensity_step = (12 + index + phase - 1) % 12;
         let alpha = ((intensity_step + 1) as f32 / 12.0 * 255.0) as u8;
 
-        draw_filled_circle(rgba, width, height, dot_x, dot_y, dot_radius, alpha);
+        draw_filled_circle(&mut rgba, width, height, dot_x, dot_y, dot_radius, alpha);
     }
+
+    Icon::from_rgba(rgba, width as u32, height as u32).expect("valid spinner tray icon")
 }
 
 fn draw_filled_circle(
