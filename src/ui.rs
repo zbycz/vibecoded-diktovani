@@ -450,9 +450,9 @@ fn status_menu_text(status: &str) -> String {
 fn copy_last_transcript_menu_text(transcript: &str) -> String {
     let compact = transcript.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.is_empty() {
-        return "Skopírovat poslední přepis: —".to_string();
+        return "Zkopírovat poslední přepis: —".to_string();
     }
-    format!("Skopírovat poslední přepis: {compact}")
+    format!("Zkopírovat poslední přepis: {compact}")
 }
 
 fn status_callback(proxy: EventLoopProxy<UserEvent>) -> StatusCallback {
