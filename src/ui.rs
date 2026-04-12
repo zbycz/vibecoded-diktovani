@@ -1,6 +1,6 @@
 use crate::core::{
     ModelManager, RecorderState, copy_and_paste_text, has_accessibility_permission,
-    transcribe_wav_file,
+    is_launch_at_login_enabled, set_launch_at_login, transcribe_wav_file,
 };
 #[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
@@ -10,7 +10,7 @@ use objc2_app_kit::NSImage;
 use objc2_foundation::NSString;
 use std::thread;
 use std::time::{Duration, Instant};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::application::ApplicationHandler;
 use winit::event::StartCause;
@@ -55,6 +55,7 @@ enum TrayVisualState {
 pub struct WhisperingMvpApp {
     proxy: EventLoopProxy<UserEvent>,
     tray_icon: Option<TrayIcon>,
+    launch_at_login_item: Option<CheckMenuItem>,
     status_item: Option<MenuItem>,
     quit_item: Option<MenuItem>,
     recorder: RecorderState,
@@ -76,6 +77,7 @@ impl WhisperingMvpApp {
         Self {
             proxy,
             tray_icon: None,
+            launch_at_login_item: None,
             status_item: None,
             quit_item: None,
             recorder: RecorderState::new(),
@@ -87,10 +89,17 @@ impl WhisperingMvpApp {
         }
     }
 
-    fn build_tray_icon(&self) -> UiResult<(TrayIcon, MenuItem, MenuItem)> {
+    fn build_tray_icon(&self) -> UiResult<(TrayIcon, CheckMenuItem, MenuItem, MenuItem)> {
         let menu = Menu::new();
+        let launch_at_login_item = CheckMenuItem::new(
+            "Spouštět po startu systému",
+            true,
+            is_launch_at_login_enabled(),
+            None,
+        );
         let status_item = MenuItem::new(status_menu_text(&self.status), false, None);
         let quit_item = MenuItem::new("Quit", true, None);
+        menu.append(&launch_at_login_item)?;
         menu.append(&status_item)?;
         menu.append(&quit_item)?;
 
@@ -103,7 +112,7 @@ impl WhisperingMvpApp {
             .with_menu_on_right_click(true)
             .build()?;
 
-        Ok((tray_icon, status_item, quit_item))
+        Ok((tray_icon, launch_at_login_item, status_item, quit_item))
     }
 
     fn tooltip(&self) -> String {
@@ -238,8 +247,9 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
         }
 
         match self.build_tray_icon() {
-            Ok((tray_icon, status_item, quit_item)) => {
+            Ok((tray_icon, launch_at_login_item, status_item, quit_item)) => {
                 self.tray_icon = Some(tray_icon);
+                self.launch_at_login_item = Some(launch_at_login_item);
                 self.status_item = Some(status_item);
                 self.quit_item = Some(quit_item);
                 self.refresh_tray(TrayVisualState::Idle);
@@ -267,6 +277,33 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
             }) => self.toggle_recording(),
             UserEvent::TrayIconEvent(_) => {}
             UserEvent::MenuEvent(event) => {
+                if self
+                    .launch_at_login_item
+                    .as_ref()
+                    .is_some_and(|item| event.id == *item.id())
+                {
+                    let enabled = self
+                        .launch_at_login_item
+                        .as_ref()
+                        .map(|item| item.is_checked())
+                        .unwrap_or(false);
+                    match set_launch_at_login(enabled) {
+                        Ok(()) => {
+                            self.set_status(if enabled {
+                                "Autostart enabled."
+                            } else {
+                                "Autostart disabled."
+                            });
+                        }
+                        Err(err) => {
+                            if let Some(item) = self.launch_at_login_item.as_ref() {
+                                item.set_checked(!enabled);
+                            }
+                            self.set_status(format!("Failed to update autostart: {err}"));
+                        }
+                    }
+                    return;
+                }
                 if self.quit_item.as_ref().is_some_and(|item| event.id == *item.id()) {
                     event_loop.exit();
                 }

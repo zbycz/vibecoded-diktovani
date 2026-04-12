@@ -32,6 +32,7 @@ use transcribe_rs::engines::whisper::{WhisperEngine, WhisperInferenceParams};
 pub const MODEL_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin";
 pub const MODEL_FILENAME: &str = "ggml-large-v3-turbo.bin";
+pub const APP_IDENTIFIER: &str = "com.example.diktovani";
 pub const LANGUAGE: &str = "cs";
 
 #[derive(Debug, Error)]
@@ -699,6 +700,77 @@ pub fn copy_and_paste_text(text: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn is_launch_at_login_enabled() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        launch_agent_plist_path()
+            .map(|path| path.exists())
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+pub fn set_launch_at_login(enabled: bool) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let plist_path = launch_agent_plist_path()?;
+        let launch_agents_dir = plist_path.parent().ok_or_else(|| {
+            AppError::Message("LaunchAgent path is missing a parent directory.".into())
+        })?;
+
+        if enabled {
+            std::fs::create_dir_all(launch_agents_dir)?;
+
+            let executable = std::env::current_exe().map_err(|err| {
+                AppError::Message(format!("Failed to resolve current executable: {err}"))
+            })?;
+            let plist_contents = launch_agent_plist_contents(&executable);
+            let tmp_path = plist_path.with_extension("plist.tmp");
+            std::fs::write(&tmp_path, plist_contents)?;
+            std::fs::rename(&tmp_path, &plist_path)?;
+
+            let _ = Command::new("launchctl")
+                .args(["unload", "-w"])
+                .arg(&plist_path)
+                .status();
+            let status = Command::new("launchctl")
+                .args(["load", "-w"])
+                .arg(&plist_path)
+                .status()
+                .map_err(|err| {
+                    AppError::Message(format!("Failed to run launchctl load: {err}"))
+                })?;
+            if !status.success() {
+                return Err(AppError::Message(format!(
+                    "launchctl load failed with status {status}."
+                )));
+            }
+        } else {
+            if plist_path.exists() {
+                let _ = Command::new("launchctl")
+                    .args(["unload", "-w"])
+                    .arg(&plist_path)
+                    .status();
+                std::fs::remove_file(&plist_path)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = enabled;
+        Err(AppError::Message(
+            "Launch at login is only implemented for macOS.".into(),
+        ))
+    }
+}
+
 pub fn transcribe_wav_file(model_manager: &ModelManager, file_path: &PathBuf) -> Result<String> {
     let total_started_at = Instant::now();
     println!("[transcribe] reading audio from {}", file_path.display());
@@ -826,6 +898,50 @@ fn cache_model_path() -> Result<PathBuf> {
         .join(".cache")
         .join("diktovani")
         .join(MODEL_FILENAME))
+}
+
+#[cfg(target_os = "macos")]
+fn launch_agent_plist_path() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| AppError::Message("HOME is not set, cannot resolve LaunchAgents.".into()))?;
+    Ok(PathBuf::from(home)
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{APP_IDENTIFIER}.plist")))
+}
+
+#[cfg(target_os = "macos")]
+fn launch_agent_plist_contents(executable: &PathBuf) -> String {
+    let executable = xml_escape(&executable.to_string_lossy());
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{APP_IDENTIFIER}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{executable}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>
+"#
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 fn extract_whisper_samples_from_wav(audio_data: Vec<u8>) -> Result<Vec<f32>> {
