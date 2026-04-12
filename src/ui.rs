@@ -1,7 +1,7 @@
 use crate::core::{
     ModelManager, RecorderState, StatusCallback, copy_and_paste_text,
     has_accessibility_permission, is_launch_at_login_enabled, set_launch_at_login,
-    transcribe_wav_file,
+    transcribe_wav_file, request_accessibility_permission_if_needed,
 };
 #[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
@@ -262,6 +262,11 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                 self.status_item = Some(status_item);
                 self.quit_item = Some(quit_item);
                 self.refresh_tray(TrayVisualState::Idle);
+                if !request_accessibility_permission_if_needed() {
+                    self.set_status(
+                        "Accessibility permission is needed for auto-paste. macOS settings were opened.",
+                    );
+                }
             }
             Err(err) => {
                 eprintln!("[tray] failed to create tray icon: {err}");

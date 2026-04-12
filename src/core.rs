@@ -626,6 +626,15 @@ pub fn has_accessibility_permission() -> bool {
     }
 }
 
+pub fn request_accessibility_permission_if_needed() -> bool {
+    if has_accessibility_permission() {
+        return true;
+    }
+
+    prompt_accessibility_permission();
+    false
+}
+
 #[cfg(target_os = "macos")]
 fn prompt_accessibility_permission() {
     let key = unsafe { CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt) };
