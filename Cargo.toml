@@ -17,7 +17,6 @@ rubato = "0.15.0"
 tempfile = "3.8.1"
 thiserror = "2.0.12"
 tray-icon = "0.22.0"
-transcribe-rs = { version = "0.2.9", features = ["whisper"] }
 ureq = "2.12.1"
 winit = "0.30.12"
 
@@ -28,3 +27,4 @@ objc = "0.2.7"
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSButton", "NSImage", "NSStatusBarButton", "NSStatusItem"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString"] }
+whisper-rs = { version = "0.13.2", features = ["metal"] }

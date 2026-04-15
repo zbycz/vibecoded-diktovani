@@ -26,8 +26,7 @@ use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
-use transcribe_rs::TranscriptionEngine;
-use transcribe_rs::engines::whisper::{WhisperEngine, WhisperInferenceParams};
+use crate::whisper::WhisperModel;
 
 pub const MODEL_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin";
@@ -47,6 +46,7 @@ pub enum AppError {
 
 pub type Result<T> = std::result::Result<T, AppError>;
 pub type StatusCallback = Arc<dyn Fn(String) + Send + Sync + 'static>;
+pub type ProgressCallback = Arc<dyn Fn(u8) + Send + Sync + 'static>;
 
 #[derive(Debug)]
 pub struct AudioRecording {
@@ -495,13 +495,12 @@ fn build_input_stream(
 }
 
 enum Engine {
-    Whisper(WhisperEngine),
+    Whisper(WhisperModel),
 }
 
 impl Engine {
     fn unload(&mut self) {
-        let Self::Whisper(engine) = self;
-        engine.unload_model();
+        // WhisperModel drops its resources when the Engine is dropped.
     }
 }
 
@@ -548,9 +547,7 @@ impl ModelManager {
         };
 
         if needs_load {
-            let mut engine = WhisperEngine::new();
-            engine
-                .load_model(&model_path)
+            let engine = WhisperModel::load(&model_path)
                 .map_err(|e| AppError::Message(format!("Failed to load Whisper model: {e}")))?;
             *engine_guard = Some(Engine::Whisper(engine));
             *current_path_guard = Some(model_path);
@@ -805,6 +802,7 @@ pub fn transcribe_wav_file(
     model_manager: &ModelManager,
     file_path: &PathBuf,
     status_callback: Option<&StatusCallback>,
+    progress_callback: Option<&ProgressCallback>,
 ) -> Result<String> {
     let total_started_at = Instant::now();
     println!("[transcribe] reading audio from {}", file_path.display());
@@ -840,29 +838,24 @@ pub fn transcribe_wav_file(
         model_path.display()
     );
 
-    let mut params = WhisperInferenceParams::default();
-    params.language = Some(LANGUAGE.to_string());
-    params.print_special = false;
-    params.print_progress = false;
-    params.print_realtime = false;
-    params.print_timestamps = false;
-    params.suppress_blank = true;
-    params.suppress_non_speech_tokens = true;
-    params.no_speech_thold = 0.2;
+    let on_progress: Option<Box<dyn FnMut(u8) + 'static>> = progress_callback.map(|cb| {
+        let cb = cb.clone();
+        Box::new(move |pct: u8| cb(pct)) as Box<dyn FnMut(u8) + 'static>
+    });
 
-    let mut engine_guard = engine_arc
+    let engine_guard = engine_arc
         .lock()
         .map_err(|e| AppError::Message(format!("Engine mutex poisoned: {e}")))?;
     let engine = engine_guard
-        .as_mut()
+        .as_ref()
         .ok_or_else(|| AppError::Message("Whisper model is not loaded.".into()))?;
-    let Engine::Whisper(whisper_engine) = engine;
+    let Engine::Whisper(whisper_model) = engine;
 
     let inference_started_at = Instant::now();
-    let result = whisper_engine
-        .transcribe_samples(samples, Some(params))
+    let raw = whisper_model
+        .transcribe(&samples, Some(LANGUAGE), on_progress)
         .map_err(|e| AppError::Message(format!("Transcription failed: {e}")))?;
-    let transcript = strip_trailing_subtitle_credit(result.text.trim());
+    let transcript = strip_trailing_subtitle_credit(raw.trim());
 
     println!(
         "[transcribe] inference finished in {:.2}s, transcript chars={}, total {:.2}s",

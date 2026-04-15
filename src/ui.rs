@@ -1,8 +1,10 @@
 use crate::core::{
-    ModelManager, RecorderState, StatusCallback, copy_and_paste_text, copy_text_to_clipboard,
-    ensure_model_cached, has_accessibility_permission, is_launch_at_login_enabled,
-    request_accessibility_permission_if_needed, set_launch_at_login, transcribe_wav_file,
+    ModelManager, ProgressCallback, RecorderState, StatusCallback, copy_and_paste_text,
+    copy_text_to_clipboard, ensure_model_cached, has_accessibility_permission,
+    is_launch_at_login_enabled, request_accessibility_permission_if_needed, set_launch_at_login,
+    transcribe_wav_file,
 };
+use crate::icons::{draw_checkmark_icon, draw_progress_icon, load_microphone_icon};
 use crate::hotkey::{HotkeyMonitor, install_double_fn_monitor};
 #[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
@@ -46,6 +48,7 @@ enum UserEvent {
 
 enum WorkerEvent {
     Status(String),
+    TranscriptionProgress(u8),
     Success(String),
     PasteFailed { transcript: String, error: String },
     Failed(String),
@@ -55,7 +58,7 @@ enum WorkerEvent {
 enum TrayVisualState {
     Idle,
     Recording,
-    Transcribing(usize),
+    Transcribing(u8), // progress 0–100
 }
 
 pub struct WhisperingMvpApp {
@@ -72,8 +75,7 @@ pub struct WhisperingMvpApp {
     last_transcript: String,
     status: String,
     is_transcribing: bool,
-    spinner_phase: usize,
-    last_spinner_tick: Instant,
+    transcription_progress: u8,
 }
 
 impl WhisperingMvpApp {
@@ -101,8 +103,7 @@ impl WhisperingMvpApp {
             last_transcript: String::new(),
             status,
             is_transcribing: false,
-            spinner_phase: 0,
-            last_spinner_tick: Instant::now(),
+            transcription_progress: 0,
         }
     }
 
@@ -178,7 +179,7 @@ impl WhisperingMvpApp {
     fn set_status(&mut self, status: impl Into<String>) {
         self.status = status.into();
         let state = if self.is_transcribing {
-            TrayVisualState::Transcribing(self.spinner_phase)
+            TrayVisualState::Transcribing(self.transcription_progress)
         } else if self.recorder.is_recording() {
             TrayVisualState::Recording
         } else {
@@ -197,8 +198,7 @@ impl WhisperingMvpApp {
             match self.recorder.stop_recording() {
                 Ok(recording) => {
                     self.is_transcribing = true;
-                    self.spinner_phase = 0;
-                    self.last_spinner_tick = Instant::now();
+                    self.transcription_progress = 0;
                     self.set_status(format!(
                         "Recording stopped ({:.1}s, {} Hz, {} ch). Transcribing...",
                         recording.duration_seconds, recording.sample_rate, recording.channels
@@ -207,12 +207,14 @@ impl WhisperingMvpApp {
                     let proxy = self.proxy.clone();
                     let model_manager = self.model_manager.clone();
                     let status_callback = status_callback(proxy.clone());
+                    let progress_cb = progress_callback(proxy.clone());
                     let file_path = recording.file_path;
                     thread::spawn(move || {
                         let event = match transcribe_wav_file(
                             &model_manager,
                             &file_path,
                             Some(&status_callback),
+                            Some(&progress_cb),
                         ) {
                             Ok(transcript) => {
                                 println!("{transcript}");
@@ -258,16 +260,6 @@ impl WhisperingMvpApp {
                 self.set_status(format!("Start failed: {err}"));
             }
         }
-    }
-
-    fn tick_spinner(&mut self) {
-        if !self.is_transcribing || self.last_spinner_tick.elapsed() < Duration::from_millis(100) {
-            return;
-        }
-
-        self.spinner_phase = (self.spinner_phase + 1) % 12;
-        self.last_spinner_tick = Instant::now();
-        self.refresh_tray(TrayVisualState::Transcribing(self.spinner_phase));
     }
 
     fn install_hotkey_monitor(&mut self) {
@@ -429,23 +421,27 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                     WorkerEvent::Status(status) => {
                         self.set_status(status);
                     }
+                    WorkerEvent::TranscriptionProgress(p) => {
+                        self.transcription_progress = p;
+                        self.refresh_tray(TrayVisualState::Transcribing(p));
+                    }
                     WorkerEvent::Success(transcript) => {
                         self.is_transcribing = false;
-                        self.spinner_phase = 0;
+                        self.transcription_progress = 0;
                         self.last_transcript = transcript.clone();
                         let preview = preview_text(&transcript);
                         self.set_status(format!("Transcript pasted. {preview}"));
                     }
                     WorkerEvent::PasteFailed { transcript, error } => {
                         self.is_transcribing = false;
-                        self.spinner_phase = 0;
+                        self.transcription_progress = 0;
                         self.last_transcript = transcript.clone();
                         let preview = preview_text(&transcript);
                         self.set_status(format!("Transcript ready but paste failed: {error}. {preview}"));
                     }
                     WorkerEvent::Failed(error) => {
                         self.is_transcribing = false;
-                        self.spinner_phase = 0;
+                        self.transcription_progress = 0;
                         self.set_status(format!("Transcription failed: {error}"));
                     }
                 }
@@ -456,14 +452,8 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.model_manager.unload_if_idle();
         self.refresh_accessibility_hotkey();
-        self.tick_spinner();
 
-        let next_tick = if self.is_transcribing {
-            Duration::from_millis(100)
-        } else {
-            Duration::from_secs(1)
-        };
-        event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + next_tick));
+        event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(1)));
     }
 }
 
@@ -503,23 +493,18 @@ fn status_callback(proxy: EventLoopProxy<UserEvent>) -> StatusCallback {
     })
 }
 
+fn progress_callback(proxy: EventLoopProxy<UserEvent>) -> ProgressCallback {
+    Arc::new(move |pct| {
+        let _ = proxy.send_event(UserEvent::WorkerEvent(WorkerEvent::TranscriptionProgress(pct)));
+    })
+}
+
 fn icon_for_state(state: TrayVisualState) -> Icon {
     match state {
         TrayVisualState::Idle => load_microphone_icon(),
         TrayVisualState::Recording => draw_checkmark_icon(),
-        TrayVisualState::Transcribing(phase) => draw_spinner_icon(phase),
+        TrayVisualState::Transcribing(progress) => draw_progress_icon(progress),
     }
-}
-
-fn load_microphone_icon() -> Icon {
-    let image = image::load_from_memory_with_format(
-        include_bytes!("../assets/AppIcon.appiconset/icon_32x32.png"),
-        image::ImageFormat::Png,
-    )
-    .expect("embedded microphone icon should decode")
-    .into_rgba8();
-    let (width, height) = image.dimensions();
-    Icon::from_rgba(image.into_raw(), width, height).expect("valid embedded tray icon")
 }
 
 #[cfg(target_os = "macos")]
@@ -555,92 +540,4 @@ fn apply_macos_symbol(tray_icon: &TrayIcon, state: TrayVisualState) -> bool {
 #[cfg(not(target_os = "macos"))]
 fn apply_macos_symbol(_tray_icon: &TrayIcon, _state: TrayVisualState) -> bool {
     false
-}
-
-fn draw_checkmark_icon() -> Icon {
-    let width = 32;
-    let height = 32;
-    let mut rgba = vec![0u8; width * height * 4];
-
-    for offset in 0..6 {
-        let x = 8 + offset;
-        let y = 17 + offset;
-        draw_stroke(&mut rgba, width, x, y, 2);
-    }
-
-    for offset in 0..12 {
-        let x = 13 + offset;
-        let y = 22 - offset;
-        draw_stroke(&mut rgba, width, x, y, 2);
-    }
-
-    Icon::from_rgba(rgba, width as u32, height as u32).expect("valid checkmark tray icon")
-}
-
-fn draw_spinner_icon(phase: usize) -> Icon {
-    let width = 32;
-    let height = 32;
-    let mut rgba = vec![0u8; width * height * 4];
-    let center_x = 16.0f32;
-    let center_y = 16.0f32;
-    let radius = 10.0f32;
-    let dot_radius = 2.4f32;
-
-    for index in 0..12 {
-        let angle = std::f32::consts::TAU * index as f32 / 12.0 - std::f32::consts::FRAC_PI_2;
-        let dot_x = center_x + radius * angle.cos();
-        let dot_y = center_y + radius * angle.sin();
-        let intensity_step = (12 + index + phase - 1) % 12;
-        let alpha = ((intensity_step + 1) as f32 / 12.0 * 255.0) as u8;
-
-        draw_filled_circle(&mut rgba, width, height, dot_x, dot_y, dot_radius, alpha);
-    }
-
-    Icon::from_rgba(rgba, width as u32, height as u32).expect("valid spinner tray icon")
-}
-
-fn draw_stroke(rgba: &mut [u8], width: usize, x: usize, y: usize, radius: usize) {
-    let start_x = x.saturating_sub(radius);
-    let start_y = y.saturating_sub(radius);
-    let end_x = (x + radius).min(width - 1);
-    let end_y = (y + radius).min((rgba.len() / 4 / width).saturating_sub(1));
-
-    for py in start_y..=end_y {
-        for px in start_x..=end_x {
-            set_pixel(rgba, width, px, py, 0, 0, 0, 255);
-        }
-    }
-}
-
-fn draw_filled_circle(
-    rgba: &mut [u8],
-    width: usize,
-    height: usize,
-    center_x: f32,
-    center_y: f32,
-    radius: f32,
-    alpha: u8,
-) {
-    let min_x = (center_x - radius).floor().max(0.0) as usize;
-    let max_x = (center_x + radius).ceil().min((width - 1) as f32) as usize;
-    let min_y = (center_y - radius).floor().max(0.0) as usize;
-    let max_y = (center_y + radius).ceil().min((height - 1) as f32) as usize;
-
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let dx = x as f32 - center_x;
-            let dy = y as f32 - center_y;
-            if dx * dx + dy * dy <= radius * radius {
-                set_pixel(rgba, width, x, y, 0, 0, 0, alpha);
-            }
-        }
-    }
-}
-
-fn set_pixel(rgba: &mut [u8], width: usize, x: usize, y: usize, r: u8, g: u8, b: u8, a: u8) {
-    let index = (y * width + x) * 4;
-    rgba[index] = r;
-    rgba[index + 1] = g;
-    rgba[index + 2] = b;
-    rgba[index + 3] = a;
 }
