@@ -860,12 +860,30 @@ pub fn transcribe_wav_file(
         model_path.display()
     );
 
-    let on_progress: Option<Box<dyn FnMut(u8) + 'static>> = progress_callback.map(|cb| {
+    // whisper's native progress callback only fires once per 30-second chunk –
+    // short recordings always give just 0% and 100%.  Instead, run a timer
+    // thread that fires every 200 ms with a time-based estimate, and skip the
+    // whisper callback entirely.
+    let progress_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ticker_handle: Option<thread::JoinHandle<()>> = progress_callback.map(|cb| {
         let cb = cb.clone();
-        Box::new(move |pct: u8| {
-            println!("[{:.1}s] [transcribe] progress {}%", ts(), pct);
-            cb(pct);
-        }) as Box<dyn FnMut(u8) + 'static>
+        let done = progress_done.clone();
+        // Large-v3-turbo on Apple Silicon runs roughly 3–4× faster than realtime.
+        let audio_secs = samples.len() as f32 / 16000.0;
+        let estimated_secs = (audio_secs / 3.5_f32).max(0.5);
+        thread::spawn(move || {
+            let started = Instant::now();
+            loop {
+                thread::sleep(Duration::from_millis(200));
+                if done.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                let elapsed = started.elapsed().as_secs_f32();
+                let pct = ((elapsed / estimated_secs) * 100.0).clamp(0.0, 95.0) as u8;
+                println!("[{:.1}s] [transcribe] progress ~{}%", ts(), pct);
+                cb(pct);
+            }
+        })
     });
 
     let engine_guard = engine_arc
@@ -878,9 +896,18 @@ pub fn transcribe_wav_file(
 
     let inference_started_at = Instant::now();
     let raw = whisper_model
-        .transcribe(&samples, Some(LANGUAGE), on_progress)
+        .transcribe(&samples, Some(LANGUAGE), None)
         .map_err(|e| AppError::Message(format!("Transcription failed: {e}")))?;
     let transcript = strip_trailing_subtitle_credit(raw.trim());
+
+    progress_done.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Some(h) = ticker_handle {
+        let _ = h.join();
+    }
+    if let Some(cb) = progress_callback {
+        println!("[{:.1}s] [transcribe] progress 100%", ts());
+        cb(100);
+    }
 
     println!(
         "[{:.1}s] [transcribe] inference finished in {:.2}s, transcript chars={}, total {:.2}s",
