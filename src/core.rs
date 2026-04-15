@@ -870,7 +870,7 @@ pub fn transcribe_wav_file(
         let done = progress_done.clone();
         // Empirical formula (M1, large-v3-turbo): inference ≈ 2.6s + audio_secs / 12
         let audio_secs = samples.len() as f32 / 16000.0;
-        let estimated_secs = 2.6 + audio_secs / 12.0;
+        let estimated_secs = 3.0 + audio_secs / 12.0;
         thread::spawn(move || {
             let started = Instant::now();
             loop {
