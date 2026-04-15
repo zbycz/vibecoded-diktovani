@@ -191,6 +191,7 @@ pub struct RecorderState {
     sample_rate: u32,
     channels: u16,
     file_path: Option<PathBuf>,
+    recording_started_at: Option<Instant>,
 }
 
 impl RecorderState {
@@ -203,6 +204,7 @@ impl RecorderState {
             sample_rate: 0,
             channels: 0,
             file_path: None,
+            recording_started_at: None,
         }
     }
 
@@ -296,6 +298,9 @@ impl RecorderState {
             AppError::Message(format!("Failed to receive start confirmation: {e}"))
         })??;
 
+        self.recording_started_at = Some(Instant::now());
+        println!("[{:.1}s] [record] started recording", ts());
+
         Ok(())
     }
 
@@ -333,6 +338,12 @@ impl RecorderState {
         };
 
         self.close_session()?;
+
+        let rec_duration = self.recording_started_at.take().map(|t| t.elapsed().as_secs_f32());
+        if let Some(secs) = rec_duration {
+            println!("[{:.1}s] [record] stopped recording after {:.2}s", ts(), secs);
+        }
+
         Ok(recording)
     }
 

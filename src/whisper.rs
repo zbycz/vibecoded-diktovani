@@ -1,10 +1,5 @@
 use std::path::Path;
-use whisper_rs::{FullParams, SamplingStrategy, SegmentCallbackData, WhisperContext, WhisperContextParameters};
-
-/// Helper to work around type-inference ambiguity in `set_segment_callback_safe`.
-fn set_segment_cb<F: FnMut(SegmentCallbackData) + 'static>(params: &mut FullParams, f: F) {
-    params.set_segment_callback_safe::<Option<F>, F>(Some(f));
-}
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 pub struct WhisperModel {
     context: WhisperContext,
@@ -48,13 +43,9 @@ impl WhisperModel {
         params.set_no_speech_thold(0.2);
 
         if let Some(mut progress_cb) = on_progress {
-            // Whisper timestamps are in 10 ms units (16 000 samples/s → 160 samples/10 ms).
-            let total_10ms = (samples.len() / 160).max(1) as i64;
-            let closure = move |data: SegmentCallbackData| {
-                let pct = (data.end_timestamp * 100 / total_10ms).clamp(0, 100) as u8;
-                progress_cb(pct);
-            };
-            set_segment_cb(&mut params, closure);
+            params.set_progress_callback_safe(move |progress: i32| {
+                progress_cb(progress.clamp(0, 100) as u8);
+            });
         }
 
         state.full(params, samples)?;
