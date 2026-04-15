@@ -868,9 +868,9 @@ pub fn transcribe_wav_file(
     let ticker_handle: Option<thread::JoinHandle<()>> = progress_callback.map(|cb| {
         let cb = cb.clone();
         let done = progress_done.clone();
-        // Large-v3-turbo on Apple Silicon runs roughly 3–4× faster than realtime.
+        // Empirical formula (M1, large-v3-turbo): inference ≈ 2.6s + audio_secs / 12
         let audio_secs = samples.len() as f32 / 16000.0;
-        let estimated_secs = (audio_secs / 3.5_f32).max(0.5);
+        let estimated_secs = 2.6 + audio_secs / 12.0;
         thread::spawn(move || {
             let started = Instant::now();
             loop {
