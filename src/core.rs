@@ -563,9 +563,29 @@ impl ModelManager {
     }
 
     pub fn preload_whisper(&self, status_callback: Option<&StatusCallback>) -> Result<()> {
+        let started_at = Instant::now();
         let model_path = ensure_model_available(status_callback)?;
-        let (_, _) = self.get_or_load_whisper(model_path)?;
+        println!(
+            "[preload] starting Whisper preload from {}",
+            model_path.display()
+        );
+
+        let (_, loaded_now) = self.get_or_load_whisper(model_path)?;
         emit_status(status_callback, "Model ready.");
+        let elapsed = started_at.elapsed();
+
+        if loaded_now {
+            println!(
+                "[preload] Whisper model loaded in {:.2}s",
+                elapsed.as_secs_f32()
+            );
+        } else {
+            println!(
+                "[preload] Whisper model already warm (checked in {:.2}s)",
+                elapsed.as_secs_f32()
+            );
+        }
+
         Ok(())
     }
 
@@ -773,7 +793,8 @@ pub fn set_launch_at_login(enabled: bool) -> Result<()> {
 }
 
 pub fn ensure_model_cached(status_callback: Option<&StatusCallback>) -> Result<()> {
-    ensure_model_available(status_callback)?;
+    let model_path = ensure_model_available(status_callback)?;
+    println!("[model] cache ready {}", model_path.display());
     Ok(())
 }
 
@@ -783,15 +804,39 @@ pub fn transcribe_wav_file(
     status_callback: Option<&StatusCallback>,
     progress_callback: Option<&ProgressCallback>,
 ) -> Result<String> {
+    let total_started_at = Instant::now();
+    println!("[transcribe] reading audio from {}", file_path.display());
     let audio_data = std::fs::read(file_path)?;
+
+    let sample_extract_started_at = Instant::now();
     let samples = extract_whisper_samples_from_wav(audio_data)?;
+    println!(
+        "[transcribe] prepared {} samples in {:.2}s",
+        samples.len(),
+        sample_extract_started_at.elapsed().as_secs_f32()
+    );
     if samples.is_empty() {
+        println!(
+            "[transcribe] no samples found, finishing in {:.2}s",
+            total_started_at.elapsed().as_secs_f32()
+        );
         return Ok(String::new());
     }
 
+    let model_ready_started_at = Instant::now();
     let model_path = ensure_model_available(status_callback)?;
-    let (engine_arc, _) = model_manager.get_or_load_whisper(model_path)?;
+    let (engine_arc, loaded_now) = model_manager.get_or_load_whisper(model_path.clone())?;
     emit_status(status_callback, "Model ready. Transcribing...");
+    println!(
+        "[transcribe] model {} in {:.2}s ({})",
+        if loaded_now {
+            "loaded on demand"
+        } else {
+            "was already warm"
+        },
+        model_ready_started_at.elapsed().as_secs_f32(),
+        model_path.display()
+    );
 
     let on_progress: Option<Box<dyn FnMut(u8) + 'static>> = progress_callback.map(|cb| {
         let cb = cb.clone();
@@ -806,10 +851,18 @@ pub fn transcribe_wav_file(
         .ok_or_else(|| AppError::Message("Whisper model is not loaded.".into()))?;
     let Engine::Whisper(whisper_model) = engine;
 
+    let inference_started_at = Instant::now();
     let raw = whisper_model
         .transcribe(&samples, Some(LANGUAGE), on_progress)
         .map_err(|e| AppError::Message(format!("Transcription failed: {e}")))?;
     let transcript = strip_trailing_subtitle_credit(raw.trim());
+
+    println!(
+        "[transcribe] inference finished in {:.2}s, transcript chars={}, total {:.2}s",
+        inference_started_at.elapsed().as_secs_f32(),
+        transcript.len(),
+        total_started_at.elapsed().as_secs_f32()
+    );
 
     Ok(transcript)
 }
@@ -823,6 +876,7 @@ fn ensure_model_available(status_callback: Option<&StatusCallback>) -> Result<Pa
     if let Ok(metadata) = std::fs::metadata(&model_path)
         && metadata.len() > 0
     {
+        println!("[model] using cached model {}", model_path.display());
         return Ok(model_path);
     }
 
@@ -836,6 +890,12 @@ fn ensure_model_available(status_callback: Option<&StatusCallback>) -> Result<Pa
         std::fs::remove_file(&partial_path)?;
     }
 
+    let started_at = Instant::now();
+    println!(
+        "[model] downloading Whisper model from {} to {}",
+        MODEL_URL,
+        model_path.display()
+    );
     emit_status(status_callback, "Downloading model: 0% · ETA --");
 
     if let Err(err) = download_model_with_progress(&partial_path, status_callback) {
@@ -845,6 +905,11 @@ fn ensure_model_available(status_callback: Option<&StatusCallback>) -> Result<Pa
 
     std::fs::rename(&partial_path, &model_path)?;
     emit_status(status_callback, "Model download complete.");
+    println!(
+        "[model] download finished in {:.2}s: {}",
+        started_at.elapsed().as_secs_f32(),
+        model_path.display()
+    );
 
     Ok(model_path)
 }

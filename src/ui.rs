@@ -217,6 +217,7 @@ impl WhisperingMvpApp {
                             Some(&progress_cb),
                         ) {
                             Ok(transcript) => {
+                                println!("{transcript}");
                                 match copy_and_paste_text(&transcript) {
                                     Ok(()) => WorkerEvent::Success(transcript),
                                     Err(err) => WorkerEvent::PasteFailed {
