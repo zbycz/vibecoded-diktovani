@@ -28,6 +28,11 @@ use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 use crate::whisper::WhisperModel;
 
+fn ts() -> f32 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs_f32()
+}
+
 pub const MODEL_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin";
 pub const MODEL_FILENAME: &str = "ggml-large-v3-turbo.bin";
@@ -248,13 +253,13 @@ impl RecorderState {
             ) {
                 Ok(stream) => stream,
                 Err(err) => {
-                    eprintln!("Failed to build input stream: {err}");
+                    eprintln!("[{:.1}s] Failed to build input stream: {err}", ts());
                     return;
                 }
             };
 
             if let Err(err) = stream.play() {
-                eprintln!("Failed to start stream: {err}");
+                eprintln!("[{:.1}s] Failed to start stream: {err}", ts());
                 return;
             }
 
@@ -432,7 +437,7 @@ fn build_input_stream(
     is_recording: Arc<AtomicBool>,
     writer: Arc<Mutex<ProgressiveWavWriter>>,
 ) -> Result<Stream> {
-    let err_fn = |err| eprintln!("Audio stream error: {err}");
+    let err_fn = |err| eprintln!("[{:.1}s] Audio stream error: {err}", ts());
 
     let stream = match sample_format {
         SampleFormat::F32 => {
@@ -566,7 +571,8 @@ impl ModelManager {
         let started_at = Instant::now();
         let model_path = ensure_model_available(status_callback)?;
         println!(
-            "[preload] starting Whisper preload from {}",
+            "[{:.1}s] [preload] starting Whisper preload from {}",
+            ts(),
             model_path.display()
         );
 
@@ -576,12 +582,14 @@ impl ModelManager {
 
         if loaded_now {
             println!(
-                "[preload] Whisper model loaded in {:.2}s",
+                "[{:.1}s] [preload] Whisper model loaded in {:.2}s",
+                ts(),
                 elapsed.as_secs_f32()
             );
         } else {
             println!(
-                "[preload] Whisper model already warm (checked in {:.2}s)",
+                "[{:.1}s] [preload] Whisper model already warm (checked in {:.2}s)",
+                ts(),
                 elapsed.as_secs_f32()
             );
         }
@@ -645,7 +653,7 @@ fn prompt_accessibility_permission() {
     if let Err(err) =
         Command::new("open").arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility").status()
     {
-        eprintln!("[accessibility] failed to open System Settings: {err}");
+        eprintln!("[{:.1}s] [accessibility] failed to open System Settings: {err}", ts());
     }
 }
 
@@ -702,7 +710,7 @@ pub fn copy_and_paste_text(text: &str) -> Result<()> {
     if let Some(original_clipboard) = original_clipboard
         && let Err(err) = clipboard.set_text(original_clipboard)
     {
-        eprintln!("[clipboard] failed to restore original clipboard text: {err}");
+        eprintln!("[{:.1}s] [clipboard] failed to restore original clipboard text: {err}", ts());
     }
 
     Ok(())
@@ -794,7 +802,7 @@ pub fn set_launch_at_login(enabled: bool) -> Result<()> {
 
 pub fn ensure_model_cached(status_callback: Option<&StatusCallback>) -> Result<()> {
     let model_path = ensure_model_available(status_callback)?;
-    println!("[model] cache ready {}", model_path.display());
+    println!("[{:.1}s] [model] cache ready {}", ts(), model_path.display());
     Ok(())
 }
 
@@ -805,19 +813,21 @@ pub fn transcribe_wav_file(
     progress_callback: Option<&ProgressCallback>,
 ) -> Result<String> {
     let total_started_at = Instant::now();
-    println!("[transcribe] reading audio from {}", file_path.display());
+    println!("[{:.1}s] [transcribe] reading audio from {}", ts(), file_path.display());
     let audio_data = std::fs::read(file_path)?;
 
     let sample_extract_started_at = Instant::now();
     let samples = extract_whisper_samples_from_wav(audio_data)?;
     println!(
-        "[transcribe] prepared {} samples in {:.2}s",
+        "[{:.1}s] [transcribe] prepared {} samples in {:.2}s",
+        ts(),
         samples.len(),
         sample_extract_started_at.elapsed().as_secs_f32()
     );
     if samples.is_empty() {
         println!(
-            "[transcribe] no samples found, finishing in {:.2}s",
+            "[{:.1}s] [transcribe] no samples found, finishing in {:.2}s",
+            ts(),
             total_started_at.elapsed().as_secs_f32()
         );
         return Ok(String::new());
@@ -828,7 +838,8 @@ pub fn transcribe_wav_file(
     let (engine_arc, loaded_now) = model_manager.get_or_load_whisper(model_path.clone())?;
     emit_status(status_callback, "Model ready. Transcribing...");
     println!(
-        "[transcribe] model {} in {:.2}s ({})",
+        "[{:.1}s] [transcribe] model {} in {:.2}s ({})",
+        ts(),
         if loaded_now {
             "loaded on demand"
         } else {
@@ -840,7 +851,10 @@ pub fn transcribe_wav_file(
 
     let on_progress: Option<Box<dyn FnMut(u8) + 'static>> = progress_callback.map(|cb| {
         let cb = cb.clone();
-        Box::new(move |pct: u8| cb(pct)) as Box<dyn FnMut(u8) + 'static>
+        Box::new(move |pct: u8| {
+            println!("[{:.1}s] [transcribe] progress {}%", ts(), pct);
+            cb(pct);
+        }) as Box<dyn FnMut(u8) + 'static>
     });
 
     let engine_guard = engine_arc
@@ -858,7 +872,8 @@ pub fn transcribe_wav_file(
     let transcript = strip_trailing_subtitle_credit(raw.trim());
 
     println!(
-        "[transcribe] inference finished in {:.2}s, transcript chars={}, total {:.2}s",
+        "[{:.1}s] [transcribe] inference finished in {:.2}s, transcript chars={}, total {:.2}s",
+        ts(),
         inference_started_at.elapsed().as_secs_f32(),
         transcript.len(),
         total_started_at.elapsed().as_secs_f32()
@@ -876,7 +891,7 @@ fn ensure_model_available(status_callback: Option<&StatusCallback>) -> Result<Pa
     if let Ok(metadata) = std::fs::metadata(&model_path)
         && metadata.len() > 0
     {
-        println!("[model] using cached model {}", model_path.display());
+        println!("[{:.1}s] [model] using cached model {}", ts(), model_path.display());
         return Ok(model_path);
     }
 
@@ -892,7 +907,8 @@ fn ensure_model_available(status_callback: Option<&StatusCallback>) -> Result<Pa
 
     let started_at = Instant::now();
     println!(
-        "[model] downloading Whisper model from {} to {}",
+        "[{:.1}s] [model] downloading Whisper model from {} to {}",
+        ts(),
         MODEL_URL,
         model_path.display()
     );
@@ -906,7 +922,8 @@ fn ensure_model_available(status_callback: Option<&StatusCallback>) -> Result<Pa
     std::fs::rename(&partial_path, &model_path)?;
     emit_status(status_callback, "Model download complete.");
     println!(
-        "[model] download finished in {:.2}s: {}",
+        "[{:.1}s] [model] download finished in {:.2}s: {}",
+        ts(),
         started_at.elapsed().as_secs_f32(),
         model_path.display()
     );

@@ -8,6 +8,7 @@ use std::fs::OpenOptions;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     redirect_output_to_log();
+    whisper_rs::install_whisper_log_trampoline();
     ui::run()
 }
 
