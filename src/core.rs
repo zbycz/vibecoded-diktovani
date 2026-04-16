@@ -1,10 +1,9 @@
+use crate::whisper::WhisperModel;
 #[cfg(target_os = "macos")]
 use accessibility_sys::{
     AXIsProcessTrusted, AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt,
 };
 use arboard::Clipboard;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Device, SampleFormat, Stream};
 #[cfg(target_os = "macos")]
 use core_foundation::base::TCFType;
 #[cfg(target_os = "macos")]
@@ -13,6 +12,8 @@ use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::CFDictionary;
 #[cfg(target_os = "macos")]
 use core_foundation::string::CFString;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{Device, SampleFormat, Stream};
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
@@ -26,11 +27,24 @@ use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
-use crate::whisper::WhisperModel;
+
+fn log_timestamp_origin() -> &'static Mutex<Instant> {
+    static START: OnceLock<Mutex<Instant>> = OnceLock::new();
+    START.get_or_init(|| Mutex::new(Instant::now()))
+}
+
+fn set_ts_origin(origin: Instant) {
+    let mut start = log_timestamp_origin()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    *start = origin;
+}
 
 fn ts() -> f32 {
-    static START: OnceLock<Instant> = OnceLock::new();
-    START.get_or_init(Instant::now).elapsed().as_secs_f32()
+    let start = log_timestamp_origin()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    start.elapsed().as_secs_f32()
 }
 
 pub const MODEL_URL: &str =
@@ -298,7 +312,9 @@ impl RecorderState {
             AppError::Message(format!("Failed to receive start confirmation: {e}"))
         })??;
 
-        self.recording_started_at = Some(Instant::now());
+        let recording_started_at = Instant::now();
+        self.recording_started_at = Some(recording_started_at);
+        set_ts_origin(recording_started_at);
         println!("[{:.1}s] [record] started recording", ts());
 
         Ok(())
@@ -339,9 +355,16 @@ impl RecorderState {
 
         self.close_session()?;
 
-        let rec_duration = self.recording_started_at.take().map(|t| t.elapsed().as_secs_f32());
+        let rec_duration = self
+            .recording_started_at
+            .take()
+            .map(|t| t.elapsed().as_secs_f32());
         if let Some(secs) = rec_duration {
-            println!("[{:.1}s] [record] stopped recording after {:.2}s", ts(), secs);
+            println!(
+                "[{:.1}s] [record] stopped recording after {:.2}s",
+                ts(),
+                secs
+            );
         }
 
         Ok(recording)
@@ -634,7 +657,9 @@ impl ModelManager {
 
 pub fn has_accessibility_permission() -> bool {
     #[cfg(target_os = "macos")]
-    unsafe { AXIsProcessTrusted() }
+    unsafe {
+        AXIsProcessTrusted()
+    }
 
     #[cfg(not(target_os = "macos"))]
     {
@@ -661,10 +686,14 @@ fn prompt_accessibility_permission() {
         let _ = AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef());
     }
 
-    if let Err(err) =
-        Command::new("open").arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility").status()
+    if let Err(err) = Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        .status()
     {
-        eprintln!("[{:.1}s] [accessibility] failed to open System Settings: {err}", ts());
+        eprintln!(
+            "[{:.1}s] [accessibility] failed to open System Settings: {err}",
+            ts()
+        );
     }
 }
 
@@ -721,7 +750,10 @@ pub fn copy_and_paste_text(text: &str) -> Result<()> {
     if let Some(original_clipboard) = original_clipboard
         && let Err(err) = clipboard.set_text(original_clipboard)
     {
-        eprintln!("[{:.1}s] [clipboard] failed to restore original clipboard text: {err}", ts());
+        eprintln!(
+            "[{:.1}s] [clipboard] failed to restore original clipboard text: {err}",
+            ts()
+        );
     }
 
     Ok(())
@@ -781,9 +813,7 @@ pub fn set_launch_at_login(enabled: bool) -> Result<()> {
                 .args(["load", "-w"])
                 .arg(&plist_path)
                 .status()
-                .map_err(|err| {
-                    AppError::Message(format!("Failed to run launchctl load: {err}"))
-                })?;
+                .map_err(|err| AppError::Message(format!("Failed to run launchctl load: {err}")))?;
             if !status.success() {
                 return Err(AppError::Message(format!(
                     "launchctl load failed with status {status}."
@@ -813,7 +843,11 @@ pub fn set_launch_at_login(enabled: bool) -> Result<()> {
 
 pub fn ensure_model_cached(status_callback: Option<&StatusCallback>) -> Result<()> {
     let model_path = ensure_model_available(status_callback)?;
-    println!("[{:.1}s] [model] cache ready {}", ts(), model_path.display());
+    println!(
+        "[{:.1}s] [model] cache ready {}",
+        ts(),
+        model_path.display()
+    );
     Ok(())
 }
 
@@ -824,7 +858,11 @@ pub fn transcribe_wav_file(
     progress_callback: Option<&ProgressCallback>,
 ) -> Result<String> {
     let total_started_at = Instant::now();
-    println!("[{:.1}s] [transcribe] reading audio from {}", ts(), file_path.display());
+    println!(
+        "[{:.1}s] [transcribe] reading audio from {}",
+        ts(),
+        file_path.display()
+    );
     let audio_data = std::fs::read(file_path)?;
 
     let sample_extract_started_at = Instant::now();
@@ -929,13 +967,17 @@ fn ensure_model_available(status_callback: Option<&StatusCallback>) -> Result<Pa
     if let Ok(metadata) = std::fs::metadata(&model_path)
         && metadata.len() > 0
     {
-        println!("[{:.1}s] [model] using cached model {}", ts(), model_path.display());
+        println!(
+            "[{:.1}s] [model] using cached model {}",
+            ts(),
+            model_path.display()
+        );
         return Ok(model_path);
     }
 
-    let cache_dir = model_path
-        .parent()
-        .ok_or_else(|| AppError::Message("Model cache path is missing a parent directory.".into()))?;
+    let cache_dir = model_path.parent().ok_or_else(|| {
+        AppError::Message("Model cache path is missing a parent directory.".into())
+    })?;
     std::fs::create_dir_all(cache_dir)?;
 
     let partial_path = cache_dir.join(format!("{MODEL_FILENAME}.partial"));
@@ -1054,7 +1096,10 @@ fn format_download_progress(
             };
             format!("Downloading model: {:.0}% · ETA {eta}", progress)
         }
-        _ => format!("Downloading model: {:.1} MB", downloaded as f64 / 1_048_576.0),
+        _ => format!(
+            "Downloading model: {:.1} MB",
+            downloaded as f64 / 1_048_576.0
+        ),
     }
 }
 
