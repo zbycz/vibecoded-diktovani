@@ -1033,6 +1033,50 @@ fn cache_model_path() -> Result<PathBuf> {
         .join(MODEL_FILENAME))
 }
 
+/// Append one row to `timings.csv` in the model cache directory, recording how
+/// long the audio was, how long transcription took, and how many bytes the
+/// resulting transcript had. Best-effort: failures are logged, never returned.
+pub fn append_transcription_log(
+    audio_seconds: f32,
+    transcription_seconds: f32,
+    transcript_bytes: usize,
+) {
+    let Ok(model_path) = cache_model_path() else {
+        return;
+    };
+    let Some(dir) = model_path.parent() else {
+        return;
+    };
+    let csv_path = dir.join("timings.csv");
+
+    let write_header = !csv_path.exists();
+    let mut file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&csv_path)
+    {
+        Ok(file) => file,
+        Err(err) => {
+            eprintln!("[timings] failed to open {}: {err}", csv_path.display());
+            return;
+        }
+    };
+
+    use std::io::Write;
+    if write_header
+        && let Err(err) = writeln!(file, "audio_seconds,transcription_seconds,transcript_bytes")
+    {
+        eprintln!("[timings] failed to write header: {err}");
+        return;
+    }
+    if let Err(err) = writeln!(
+        file,
+        "{audio_seconds:.3},{transcription_seconds:.3},{transcript_bytes}"
+    ) {
+        eprintln!("[timings] failed to write row: {err}");
+    }
+}
+
 fn model_download_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
