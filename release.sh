@@ -11,7 +11,7 @@ VERSION="${APP_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head 
 APP_IDENTIFIER="${APP_IDENTIFIER:-com.example.diktovani}"
 MICROPHONE_USAGE_DESCRIPTION="${MICROPHONE_USAGE_DESCRIPTION:-Diktovani needs microphone access to record your speech for local transcription.}"
 SIGNING_IDENTITY="${SIGNING_IDENTITY:-}"
-APP_DIR="target/release/bundle/${APP_NAME}.app"
+APP_DIR="${APP_NAME}.app"
 CONTENTS_DIR="${APP_DIR}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
