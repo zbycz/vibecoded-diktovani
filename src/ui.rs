@@ -4,8 +4,8 @@ use crate::core::{
     is_launch_at_login_enabled, request_accessibility_permission_if_needed, set_launch_at_login,
     transcribe_wav_file,
 };
-use crate::icons::{draw_checkmark_icon, draw_progress_icon, load_microphone_icon};
 use crate::hotkey::{HotkeyMonitor, install_double_fn_monitor};
+use crate::icons::{draw_checkmark_icon, draw_progress_icon, load_microphone_icon};
 #[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
@@ -13,6 +13,7 @@ use objc2_app_kit::NSImage;
 #[cfg(target_os = "macos")]
 use objc2_foundation::NSString;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem};
@@ -58,7 +59,7 @@ enum WorkerEvent {
 enum TrayVisualState {
     Idle,
     Recording,
-    Transcribing(u8), // progress 0–100
+    Transcribing { progress: u8, submit: bool }, // progress 0–100, submit = auto-send with Enter
 }
 
 pub struct WhisperingMvpApp {
@@ -76,6 +77,10 @@ pub struct WhisperingMvpApp {
     status: String,
     is_transcribing: bool,
     transcription_progress: u8,
+    /// When toggled on during transcription, the finished transcript is pasted
+    /// and immediately submitted with Enter. Shared with the worker thread so it
+    /// can be flipped while transcription is already running.
+    submit_after_transcription: Arc<AtomicBool>,
 }
 
 impl WhisperingMvpApp {
@@ -104,12 +109,11 @@ impl WhisperingMvpApp {
             status,
             is_transcribing: false,
             transcription_progress: 0,
+            submit_after_transcription: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    fn build_tray_icon(
-        &self,
-    ) -> UiResult<(TrayIcon, MenuItem, CheckMenuItem, MenuItem, MenuItem)> {
+    fn build_tray_icon(&self) -> UiResult<(TrayIcon, MenuItem, CheckMenuItem, MenuItem, MenuItem)> {
         let menu = Menu::new();
         let copy_last_transcript_item = MenuItem::new(
             copy_last_transcript_menu_text(&self.last_transcript),
@@ -167,8 +171,7 @@ impl WhisperingMvpApp {
                 .set_text(copy_last_transcript_menu_text(&self.last_transcript));
             copy_last_transcript_item.set_enabled(!self.last_transcript.trim().is_empty());
         }
-        if apply_macos_symbol(tray_icon, state)
-        {
+        if apply_macos_symbol(tray_icon, state) {
             return;
         }
         if let Err(err) = tray_icon.set_icon_with_as_template(Some(icon_for_state(state)), true) {
@@ -176,16 +179,44 @@ impl WhisperingMvpApp {
         }
     }
 
-    fn set_status(&mut self, status: impl Into<String>) {
-        self.status = status.into();
-        let state = if self.is_transcribing {
-            TrayVisualState::Transcribing(self.transcription_progress)
+    fn current_visual_state(&self) -> TrayVisualState {
+        if self.is_transcribing {
+            TrayVisualState::Transcribing {
+                progress: self.transcription_progress,
+                submit: self.submit_after_transcription.load(Ordering::SeqCst),
+            }
         } else if self.recorder.is_recording() {
             TrayVisualState::Recording
         } else {
             TrayVisualState::Idle
-        };
+        }
+    }
+
+    fn set_status(&mut self, status: impl Into<String>) {
+        self.status = status.into();
+        let state = self.current_visual_state();
         self.refresh_tray(state);
+    }
+
+    /// Left click or the Fn/Globe hotkey: start/stop recording when idle, or
+    /// toggle "submit with Enter" while a transcription is in progress.
+    fn handle_primary_action(&mut self) {
+        if self.is_transcribing {
+            self.toggle_submit_after_transcription();
+        } else {
+            self.toggle_recording();
+        }
+    }
+
+    fn toggle_submit_after_transcription(&mut self) {
+        let enabled = !self.submit_after_transcription.load(Ordering::SeqCst);
+        self.submit_after_transcription
+            .store(enabled, Ordering::SeqCst);
+        if enabled {
+            self.set_status("Po přepisu se text vloží a odešle (Enter).");
+        } else {
+            self.set_status("Po přepisu se text jen vloží.");
+        }
     }
 
     fn toggle_recording(&mut self) {
@@ -199,6 +230,7 @@ impl WhisperingMvpApp {
                 Ok(recording) => {
                     self.is_transcribing = true;
                     self.transcription_progress = 0;
+                    self.submit_after_transcription.store(false, Ordering::SeqCst);
                     self.set_status(format!(
                         "Recording stopped ({:.1}s, {} Hz, {} ch). Transcribing...",
                         recording.duration_seconds, recording.sample_rate, recording.channels
@@ -209,6 +241,7 @@ impl WhisperingMvpApp {
                     let status_callback = status_callback(proxy.clone());
                     let progress_cb = progress_callback(proxy.clone());
                     let file_path = recording.file_path;
+                    let submit_flag = self.submit_after_transcription.clone();
                     thread::spawn(move || {
                         let event = match transcribe_wav_file(
                             &model_manager,
@@ -218,7 +251,8 @@ impl WhisperingMvpApp {
                         ) {
                             Ok(transcript) => {
                                 println!("{transcript}");
-                                match copy_and_paste_text(&transcript) {
+                                let submit = submit_flag.load(Ordering::SeqCst);
+                                match copy_and_paste_text(&transcript, submit) {
                                     Ok(()) => WorkerEvent::Success(transcript),
                                     Err(err) => WorkerEvent::PasteFailed {
                                         transcript,
@@ -364,12 +398,12 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
         self.model_manager.unload_if_idle();
 
         match event {
-            UserEvent::ToggleRecording => self.toggle_recording(),
+            UserEvent::ToggleRecording => self.handle_primary_action(),
             UserEvent::TrayIconEvent(TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
                 ..
-            }) => self.toggle_recording(),
+            }) => self.handle_primary_action(),
             UserEvent::TrayIconEvent(_) => {}
             UserEvent::MenuEvent(event) => {
                 if self
@@ -412,40 +446,48 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                     }
                     return;
                 }
-                if self.quit_item.as_ref().is_some_and(|item| event.id == *item.id()) {
+                if self
+                    .quit_item
+                    .as_ref()
+                    .is_some_and(|item| event.id == *item.id())
+                {
                     event_loop.exit();
                 }
             }
-            UserEvent::WorkerEvent(event) => {
-                match event {
-                    WorkerEvent::Status(status) => {
-                        self.set_status(status);
-                    }
-                    WorkerEvent::TranscriptionProgress(p) => {
-                        self.transcription_progress = p;
-                        self.refresh_tray(TrayVisualState::Transcribing(p));
-                    }
-                    WorkerEvent::Success(transcript) => {
-                        self.is_transcribing = false;
-                        self.transcription_progress = 0;
-                        self.last_transcript = transcript.clone();
-                        let preview = preview_text(&transcript);
-                        self.set_status(format!("Transcript pasted. {preview}"));
-                    }
-                    WorkerEvent::PasteFailed { transcript, error } => {
-                        self.is_transcribing = false;
-                        self.transcription_progress = 0;
-                        self.last_transcript = transcript.clone();
-                        let preview = preview_text(&transcript);
-                        self.set_status(format!("Transcript ready but paste failed: {error}. {preview}"));
-                    }
-                    WorkerEvent::Failed(error) => {
-                        self.is_transcribing = false;
-                        self.transcription_progress = 0;
-                        self.set_status(format!("Transcription failed: {error}"));
-                    }
+            UserEvent::WorkerEvent(event) => match event {
+                WorkerEvent::Status(status) => {
+                    self.set_status(status);
                 }
-            }
+                WorkerEvent::TranscriptionProgress(p) => {
+                    self.transcription_progress = p;
+                    let state = self.current_visual_state();
+                    self.refresh_tray(state);
+                }
+                WorkerEvent::Success(transcript) => {
+                    self.is_transcribing = false;
+                    self.transcription_progress = 0;
+                    self.submit_after_transcription.store(false, Ordering::SeqCst);
+                    self.last_transcript = transcript.clone();
+                    let preview = preview_text(&transcript);
+                    self.set_status(format!("Transcript pasted. {preview}"));
+                }
+                WorkerEvent::PasteFailed { transcript, error } => {
+                    self.is_transcribing = false;
+                    self.transcription_progress = 0;
+                    self.submit_after_transcription.store(false, Ordering::SeqCst);
+                    self.last_transcript = transcript.clone();
+                    let preview = preview_text(&transcript);
+                    self.set_status(format!(
+                        "Transcript ready but paste failed: {error}. {preview}"
+                    ));
+                }
+                WorkerEvent::Failed(error) => {
+                    self.is_transcribing = false;
+                    self.transcription_progress = 0;
+                    self.submit_after_transcription.store(false, Ordering::SeqCst);
+                    self.set_status(format!("Transcription failed: {error}"));
+                }
+            },
         }
     }
 
@@ -453,7 +495,9 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
         self.model_manager.unload_if_idle();
         self.refresh_accessibility_hotkey();
 
-        event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(1)));
+        event_loop.set_control_flow(ControlFlow::WaitUntil(
+            Instant::now() + Duration::from_secs(1),
+        ));
     }
 }
 
@@ -495,7 +539,9 @@ fn status_callback(proxy: EventLoopProxy<UserEvent>) -> StatusCallback {
 
 fn progress_callback(proxy: EventLoopProxy<UserEvent>) -> ProgressCallback {
     Arc::new(move |pct| {
-        let _ = proxy.send_event(UserEvent::WorkerEvent(WorkerEvent::TranscriptionProgress(pct)));
+        let _ = proxy.send_event(UserEvent::WorkerEvent(WorkerEvent::TranscriptionProgress(
+            pct,
+        )));
     })
 }
 
@@ -503,7 +549,7 @@ fn icon_for_state(state: TrayVisualState) -> Icon {
     match state {
         TrayVisualState::Idle => load_microphone_icon(),
         TrayVisualState::Recording => draw_checkmark_icon(),
-        TrayVisualState::Transcribing(progress) => draw_progress_icon(progress),
+        TrayVisualState::Transcribing { progress, submit } => draw_progress_icon(progress, submit),
     }
 }
 
@@ -522,13 +568,14 @@ fn apply_macos_symbol(tray_icon: &TrayIcon, state: TrayVisualState) -> bool {
     let (symbol_name, description) = match state {
         TrayVisualState::Idle => ("mic.fill", "Microphone"),
         TrayVisualState::Recording => ("checkmark", "Stop recording"),
-        TrayVisualState::Transcribing(_) => return false,
+        TrayVisualState::Transcribing { .. } => return false,
     };
     let symbol_name = NSString::from_str(symbol_name);
     let description = NSString::from_str(description);
-    let Some(image) =
-        NSImage::imageWithSystemSymbolName_accessibilityDescription(&symbol_name, Some(&description))
-    else {
+    let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &symbol_name,
+        Some(&description),
+    ) else {
         return false;
     };
 

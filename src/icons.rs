@@ -35,7 +35,10 @@ pub fn draw_checkmark_icon() -> Icon {
 ///
 /// `progress` is 0–100. At 0 only the dim background ring is drawn.
 /// At 100 a full bright ring is drawn.
-pub fn draw_progress_icon(progress: u8) -> Icon {
+///
+/// When `submit` is true a play triangle is drawn in the center, signalling that
+/// the transcript will be auto-submitted (paste + Enter) once transcription ends.
+pub fn draw_progress_icon(progress: u8, submit: bool) -> Icon {
     let size = 32usize;
     let mut rgba = vec![0u8; size * size * 4];
     let cx = 16.0f32;
@@ -45,7 +48,17 @@ pub fn draw_progress_icon(progress: u8) -> Icon {
     let start = -std::f32::consts::FRAC_PI_2; // 12 o'clock
 
     // Background: full dim ring
-    draw_arc(&mut rgba, size, cx, cy, radius, stroke, start, std::f32::consts::TAU, 60);
+    draw_arc(
+        &mut rgba,
+        size,
+        cx,
+        cy,
+        radius,
+        stroke,
+        start,
+        std::f32::consts::TAU,
+        60,
+    );
 
     // Foreground: bright progress arc
     if progress > 0 {
@@ -53,7 +66,36 @@ pub fn draw_progress_icon(progress: u8) -> Icon {
         draw_arc(&mut rgba, size, cx, cy, radius, stroke, start, sweep, 255);
     }
 
+    if submit {
+        draw_play_triangle(&mut rgba, size);
+    }
+
     Icon::from_rgba(rgba, size as u32, size as u32).expect("valid progress tray icon")
+}
+
+/// Draw a right-pointing "play" triangle centered in the icon.
+fn draw_play_triangle(rgba: &mut [u8], size: usize) {
+    let left = 13.0f32;
+    let right = 21.0f32;
+    let top = 11.0f32;
+    let bottom = 21.0f32;
+    let mid_y = (top + bottom) / 2.0;
+    let half_height = (bottom - top) / 2.0;
+
+    let y_start = top.floor() as usize;
+    let y_end = bottom.ceil() as usize;
+    for y in y_start..=y_end {
+        // Triangle width shrinks linearly to a point at `right`.
+        let t = ((y as f32 - mid_y).abs() / half_height).min(1.0);
+        let x_right = left + (right - left) * (1.0 - t);
+        let x_start = left.floor() as usize;
+        let x_end = x_right.round() as usize;
+        for x in x_start..=x_end {
+            if x < size && y < size {
+                set_pixel(rgba, size, x, y, 0, 0, 0, 255);
+            }
+        }
+    }
 }
 
 /// Draw an arc by plotting filled circles along the arc path.

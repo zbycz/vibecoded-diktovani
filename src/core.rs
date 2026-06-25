@@ -700,7 +700,7 @@ fn prompt_accessibility_permission() {
 #[cfg(not(target_os = "macos"))]
 fn prompt_accessibility_permission() {}
 
-pub fn copy_and_paste_text(text: &str) -> Result<()> {
+pub fn copy_and_paste_text(text: &str, submit_with_enter: bool) -> Result<()> {
     if text.trim().is_empty() {
         return Ok(());
     }
@@ -744,6 +744,17 @@ pub fn copy_and_paste_text(text: &str) -> Result<()> {
     enigo
         .key(modifier, Direction::Release)
         .map_err(|e| AppError::Message(format!("Failed to release modifier key: {e}")))?;
+
+    if submit_with_enter {
+        // Give the paste a moment to land before submitting.
+        thread::sleep(Duration::from_millis(50));
+        enigo
+            .key(Key::Return, Direction::Press)
+            .map_err(|e| AppError::Message(format!("Failed to press Return key: {e}")))?;
+        enigo
+            .key(Key::Return, Direction::Release)
+            .map_err(|e| AppError::Message(format!("Failed to release Return key: {e}")))?;
+    }
 
     thread::sleep(Duration::from_millis(100));
 
