@@ -16,6 +16,14 @@ use cocoa::{
 #[cfg(target_os = "macos")]
 use objc::{class, msg_send, sel, sel_impl};
 
+/// A detected Fn key tap. A double tap is reported on the second of two quick
+/// taps; the first one is reported as a `Single` just before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FnTap {
+    Single,
+    Double,
+}
+
 #[cfg(target_os = "macos")]
 const FN_KEYCODE: u16 = 63;
 #[cfg(target_os = "macos")]
@@ -30,13 +38,17 @@ struct FnTapDetector {
 
 #[cfg(target_os = "macos")]
 impl FnTapDetector {
-    fn register_event(&mut self, key_code: u16, modifier_flags: NSEventModifierFlags) -> bool {
+    fn register_event(
+        &mut self,
+        key_code: u16,
+        modifier_flags: NSEventModifierFlags,
+    ) -> Option<FnTap> {
         if key_code != FN_KEYCODE {
-            return false;
+            return None;
         }
 
         let is_fn_down = modifier_flags.contains(NSEventModifierFlags::NSFunctionKeyMask);
-        let mut detected = false;
+        let mut tap = None;
 
         if is_fn_down && !self.previous_fn_down {
             let now = Instant::now();
@@ -46,14 +58,15 @@ impl FnTapDetector {
                 .is_some_and(|last_press| now.duration_since(last_press) <= DOUBLE_TAP_WINDOW)
             {
                 self.last_press = None;
-                detected = true;
+                tap = Some(FnTap::Double);
             } else {
                 self.last_press = Some(now);
+                tap = Some(FnTap::Single);
             }
         }
 
         self.previous_fn_down = is_fn_down;
-        detected
+        tap
     }
 }
 
@@ -65,13 +78,13 @@ pub struct HotkeyMonitor {
 }
 
 #[cfg(target_os = "macos")]
-pub fn install_double_fn_monitor(
-    on_double_press: impl Fn() + Send + Sync + 'static,
+pub fn install_fn_tap_monitor(
+    on_tap: impl Fn(FnTap) + Send + Sync + 'static,
 ) -> Result<HotkeyMonitor, String> {
     let detector = Arc::new(Mutex::new(FnTapDetector::default()));
     let detector_for_monitor = detector.clone();
-    let on_double_press = Arc::new(on_double_press);
-    let on_double_press_for_monitor = on_double_press.clone();
+    let on_tap = Arc::new(on_tap);
+    let on_tap_for_monitor = on_tap.clone();
 
     let monitor_block = ConcreteBlock::new(move |event: id| {
         let key_code = unsafe { event.keyCode() };
@@ -80,8 +93,8 @@ pub fn install_double_fn_monitor(
             .lock()
             .expect("Fn tap detector mutex poisoned");
 
-        if detector.register_event(key_code, modifier_flags) {
-            on_double_press_for_monitor();
+        if let Some(tap) = detector.register_event(key_code, modifier_flags) {
+            on_tap_for_monitor(tap);
         }
     })
     .copy();
@@ -110,8 +123,8 @@ pub fn install_double_fn_monitor(
 pub struct HotkeyMonitor;
 
 #[cfg(not(target_os = "macos"))]
-pub fn install_double_fn_monitor(
-    _on_double_press: impl Fn() + Send + Sync + 'static,
+pub fn install_fn_tap_monitor(
+    _on_tap: impl Fn(FnTap) + Send + Sync + 'static,
 ) -> Result<HotkeyMonitor, String> {
-    Err("double Fn hotkey is only supported on macOS".into())
+    Err("Fn hotkey is only supported on macOS".into())
 }

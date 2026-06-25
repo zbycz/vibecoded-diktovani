@@ -4,7 +4,7 @@ use crate::core::{
     is_launch_at_login_enabled, request_accessibility_permission_if_needed, set_launch_at_login,
     transcribe_wav_file,
 };
-use crate::hotkey::{HotkeyMonitor, install_double_fn_monitor};
+use crate::hotkey::{FnTap, HotkeyMonitor, install_fn_tap_monitor};
 use crate::icons::{draw_checkmark_icon, draw_progress_icon, load_microphone_icon};
 #[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
@@ -43,7 +43,7 @@ pub fn run() -> UiResult<()> {
 enum UserEvent {
     TrayIconEvent(TrayIconEvent),
     MenuEvent(MenuEvent),
-    ToggleRecording,
+    FnTap(FnTap),
     WorkerEvent(WorkerEvent),
 }
 
@@ -198,12 +198,30 @@ impl WhisperingMvpApp {
         self.refresh_tray(state);
     }
 
-    /// Left click or the Fn/Globe hotkey: start/stop recording when idle, or
-    /// toggle "submit with Enter" while a transcription is in progress.
+    /// Tray left click: start/stop recording when idle, or toggle "submit with
+    /// Enter" while a transcription is in progress.
     fn handle_primary_action(&mut self) {
         if self.is_transcribing {
             self.toggle_submit_after_transcription();
         } else {
+            self.toggle_recording();
+        }
+    }
+
+    /// Fn/Globe hotkey. A *double* tap starts recording from idle. A *single*
+    /// tap stops an in-progress recording, or toggles submit-with-Enter while a
+    /// transcription is running. A single tap while idle is ignored so the Fn
+    /// key keeps working normally.
+    fn handle_fn_tap(&mut self, tap: FnTap) {
+        if self.is_transcribing {
+            if tap == FnTap::Single {
+                self.toggle_submit_after_transcription();
+            }
+        } else if self.recorder.is_recording() {
+            if tap == FnTap::Single {
+                self.toggle_recording();
+            }
+        } else if tap == FnTap::Double {
             self.toggle_recording();
         }
     }
@@ -303,8 +321,8 @@ impl WhisperingMvpApp {
         }
 
         let proxy = self.proxy.clone();
-        match install_double_fn_monitor(move || {
-            let _ = proxy.send_event(UserEvent::ToggleRecording);
+        match install_fn_tap_monitor(move |tap| {
+            let _ = proxy.send_event(UserEvent::FnTap(tap));
         }) {
             Ok(monitor) => {
                 self.hotkey_monitor = Some(monitor);
@@ -398,7 +416,7 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
         self.model_manager.unload_if_idle();
 
         match event {
-            UserEvent::ToggleRecording => self.handle_primary_action(),
+            UserEvent::FnTap(tap) => self.handle_fn_tap(tap),
             UserEvent::TrayIconEvent(TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
