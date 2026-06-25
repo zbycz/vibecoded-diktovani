@@ -42,9 +42,11 @@ build_icns() {
     iconutil -c icns "${tmp_dir}/${ICON_NAME}.iconset" -o "$output_icns"
 }
 
+# Remove any stale bundle first, then build, then repackage.
+rm -rf "$APP_DIR"
+
 cargo build --release
 
-rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 cp "target/release/${BIN_NAME}" "${MACOS_DIR}/${BIN_NAME}"
