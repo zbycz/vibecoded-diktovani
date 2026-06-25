@@ -4,6 +4,7 @@ use crate::core::{
     is_launch_at_login_enabled, request_accessibility_permission_if_needed, set_launch_at_login,
     transcribe_wav_file,
 };
+use crate::bubble::{Bubble, BubbleState};
 use crate::hotkey::{FnTap, HotkeyMonitor, install_fn_tap_monitor};
 use crate::icons::{draw_checkmark_icon, draw_progress_icon, load_microphone_icon};
 #[cfg(target_os = "macos")]
@@ -44,6 +45,7 @@ enum UserEvent {
     TrayIconEvent(TrayIconEvent),
     MenuEvent(MenuEvent),
     FnTap(FnTap),
+    Cancel,
     WorkerEvent(WorkerEvent),
 }
 
@@ -53,6 +55,7 @@ enum WorkerEvent {
     Success(String),
     PasteFailed { transcript: String, error: String },
     Failed(String),
+    Cancelled,
 }
 
 #[derive(Clone, Copy)]
@@ -81,6 +84,11 @@ pub struct WhisperingMvpApp {
     /// and immediately submitted with Enter. Shared with the worker thread so it
     /// can be flipped while transcription is already running.
     submit_after_transcription: Arc<AtomicBool>,
+    /// Set when the user cancels the in-progress transcription. A fresh handle is
+    /// created per transcription so a cancelled (still-running) worker can never
+    /// paste, even if a new recording is started right after.
+    cancel_flag: Arc<AtomicBool>,
+    bubble: Option<Bubble>,
 }
 
 impl WhisperingMvpApp {
@@ -110,6 +118,8 @@ impl WhisperingMvpApp {
             is_transcribing: false,
             transcription_progress: 0,
             submit_after_transcription: Arc::new(AtomicBool::new(false)),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+            bubble: None,
         }
     }
 
@@ -226,6 +236,84 @@ impl WhisperingMvpApp {
         }
     }
 
+    /// "Zrušit" from the bubble (or, in future, a key): throw away the current
+    /// recording, or mark the running transcription so its result is discarded.
+    fn cancel_current(&mut self) {
+        if self.recorder.is_recording() {
+            match self.recorder.stop_recording() {
+                Ok(recording) => {
+                    if let Err(err) = std::fs::remove_file(&recording.file_path) {
+                        eprintln!(
+                            "[recording] failed to remove cancelled temp file {}: {err}",
+                            recording.file_path.display()
+                        );
+                    }
+                }
+                Err(err) => eprintln!("[recording] cancel stop failed: {err}"),
+            }
+            self.hide_bubble();
+            self.set_status("Nahrávání zrušeno.");
+        } else if self.is_transcribing {
+            self.cancel_flag.store(true, Ordering::SeqCst);
+            self.is_transcribing = false;
+            self.transcription_progress = 0;
+            self.submit_after_transcription.store(false, Ordering::SeqCst);
+            self.hide_bubble();
+            self.set_status("Přepis zrušen.");
+        }
+    }
+
+    fn show_bubble(&mut self, state: BubbleState) {
+        let anchor = self.status_item_screen_rect();
+        if let Some(bubble) = self.bubble.as_ref() {
+            match anchor {
+                Some(rect) => bubble.show(state, rect),
+                None => bubble.show(state, (0.0, 0.0, 0.0, 0.0)),
+            }
+        }
+    }
+
+    fn update_bubble(&mut self, state: BubbleState) {
+        if let Some(bubble) = self.bubble.as_ref() {
+            bubble.update(state);
+        }
+    }
+
+    fn hide_bubble(&mut self) {
+        if let Some(bubble) = self.bubble.as_ref() {
+            bubble.hide();
+        }
+    }
+
+    /// Screen rect of the menu-bar icon (origin bottom-left), used to anchor the
+    /// popup bubble directly under it.
+    #[cfg(target_os = "macos")]
+    fn status_item_screen_rect(&self) -> Option<(f64, f64, f64, f64)> {
+        use objc2::runtime::AnyObject;
+        let tray_icon = self.tray_icon.as_ref()?;
+        let status_item = tray_icon.ns_status_item()?;
+        let mtm = MainThreadMarker::new()?;
+        let button = status_item.button(mtm)?;
+        unsafe {
+            let window: *mut AnyObject = objc2::msg_send![&*button, window];
+            if window.is_null() {
+                return None;
+            }
+            let frame: objc2_foundation::NSRect = objc2::msg_send![window, frame];
+            Some((
+                frame.origin.x,
+                frame.origin.y,
+                frame.size.width,
+                frame.size.height,
+            ))
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn status_item_screen_rect(&self) -> Option<(f64, f64, f64, f64)> {
+        None
+    }
+
     fn toggle_submit_after_transcription(&mut self) {
         let enabled = !self.submit_after_transcription.load(Ordering::SeqCst);
         self.submit_after_transcription
@@ -249,6 +337,8 @@ impl WhisperingMvpApp {
                     self.is_transcribing = true;
                     self.transcription_progress = 0;
                     self.submit_after_transcription.store(false, Ordering::SeqCst);
+                    self.cancel_flag = Arc::new(AtomicBool::new(false));
+                    self.update_bubble(BubbleState::Transcribing);
                     self.set_status(format!(
                         "Recording stopped ({:.1}s, {} Hz, {} ch). Transcribing...",
                         recording.duration_seconds, recording.sample_rate, recording.channels
@@ -260,7 +350,10 @@ impl WhisperingMvpApp {
                     let progress_cb = progress_callback(proxy.clone());
                     let file_path = recording.file_path;
                     let submit_flag = self.submit_after_transcription.clone();
+                    let cancel_flag = self.cancel_flag.clone();
+                    let audio_seconds = recording.duration_seconds;
                     thread::spawn(move || {
+                        let transcription_started = Instant::now();
                         let event = match transcribe_wav_file(
                             &model_manager,
                             &file_path,
@@ -269,13 +362,22 @@ impl WhisperingMvpApp {
                         ) {
                             Ok(transcript) => {
                                 println!("{transcript}");
-                                let submit = submit_flag.load(Ordering::SeqCst);
-                                match copy_and_paste_text(&transcript, submit) {
-                                    Ok(()) => WorkerEvent::Success(transcript),
-                                    Err(err) => WorkerEvent::PasteFailed {
-                                        transcript,
-                                        error: err.to_string(),
-                                    },
+                                crate::core::append_transcription_log(
+                                    audio_seconds,
+                                    transcription_started.elapsed().as_secs_f32(),
+                                    transcript.len(),
+                                );
+                                if cancel_flag.load(Ordering::SeqCst) {
+                                    WorkerEvent::Cancelled
+                                } else {
+                                    let submit = submit_flag.load(Ordering::SeqCst);
+                                    match copy_and_paste_text(&transcript, submit) {
+                                        Ok(()) => WorkerEvent::Success(transcript),
+                                        Err(err) => WorkerEvent::PasteFailed {
+                                            transcript,
+                                            error: err.to_string(),
+                                        },
+                                    }
                                 }
                             }
                             Err(err) => WorkerEvent::Failed(err.to_string()),
@@ -306,6 +408,7 @@ impl WhisperingMvpApp {
                         eprintln!("[preload] failed: {err}");
                     }
                 });
+                self.show_bubble(BubbleState::Recording);
                 self.set_status("Recording... left click again to stop.");
             }
             Err(err) => {
@@ -383,6 +486,11 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                 self.quit_item = Some(quit_item);
                 self.refresh_tray(TrayVisualState::Idle);
 
+                let cancel_proxy = self.proxy.clone();
+                self.bubble = Some(Bubble::new(Box::new(move || {
+                    let _ = cancel_proxy.send_event(UserEvent::Cancel);
+                })));
+
                 let status_callback = status_callback(self.proxy.clone());
                 thread::spawn(move || {
                     if let Err(err) = ensure_model_cached(Some(&status_callback)) {
@@ -417,6 +525,7 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
 
         match event {
             UserEvent::FnTap(tap) => self.handle_fn_tap(tap),
+            UserEvent::Cancel => self.cancel_current(),
             UserEvent::TrayIconEvent(TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
@@ -485,6 +594,7 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                     self.is_transcribing = false;
                     self.transcription_progress = 0;
                     self.submit_after_transcription.store(false, Ordering::SeqCst);
+                    self.hide_bubble();
                     self.last_transcript = transcript.clone();
                     let preview = preview_text(&transcript);
                     self.set_status(format!("Transcript pasted. {preview}"));
@@ -493,6 +603,7 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                     self.is_transcribing = false;
                     self.transcription_progress = 0;
                     self.submit_after_transcription.store(false, Ordering::SeqCst);
+                    self.hide_bubble();
                     self.last_transcript = transcript.clone();
                     let preview = preview_text(&transcript);
                     self.set_status(format!(
@@ -503,7 +614,15 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                     self.is_transcribing = false;
                     self.transcription_progress = 0;
                     self.submit_after_transcription.store(false, Ordering::SeqCst);
+                    self.hide_bubble();
                     self.set_status(format!("Transcription failed: {error}"));
+                }
+                WorkerEvent::Cancelled => {
+                    self.is_transcribing = false;
+                    self.transcription_progress = 0;
+                    self.submit_after_transcription.store(false, Ordering::SeqCst);
+                    self.hide_bubble();
+                    self.set_status("Přepis zrušen.");
                 }
             },
         }

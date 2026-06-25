@@ -1,3 +1,4 @@
+mod bubble;
 mod core;
 mod hotkey;
 mod icons;
