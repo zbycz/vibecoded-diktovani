@@ -746,8 +746,11 @@ pub fn copy_and_paste_text(text: &str, submit_with_enter: bool) -> Result<()> {
         .map_err(|e| AppError::Message(format!("Failed to release modifier key: {e}")))?;
 
     if submit_with_enter {
-        // Give the paste a moment to land before submitting.
-        thread::sleep(Duration::from_millis(50));
+        // The paste (Cmd+V) is asynchronous: the target app inserts the text on
+        // its own schedule. Slower/web/Electron apps can take >100ms, and if we
+        // press Return before the text has landed it submits an empty field (or
+        // nothing). Wait long enough that the paste has reliably committed.
+        thread::sleep(Duration::from_millis(250));
         enigo
             .key(Key::Return, Direction::Press)
             .map_err(|e| AppError::Message(format!("Failed to press Return key: {e}")))?;
