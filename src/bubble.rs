@@ -9,7 +9,9 @@
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BubbleState {
     Recording,
-    Transcribing,
+    /// Transcription in progress. `submit` is true once the user has armed
+    /// "paste + Enter" mode, which changes the bubble's icon/title/hint.
+    Transcribing { submit: bool },
 }
 
 /// Screen rect of the menu-bar icon: (x, y, width, height) in AppKit screen
@@ -196,10 +198,15 @@ mod macos {
                     "Nahrávám…",
                     "Klikni na háček ✓ v liště nebo stiskni Fn pro spuštění přepisu.",
                 ),
-                BubbleState::Transcribing => (
+                BubbleState::Transcribing { submit: false } => (
                     "waveform",
                     "Přepisuji…",
                     "Klávesou Fn (nebo klikem na lištu) zapneš odeslání Enterem.",
+                ),
+                BubbleState::Transcribing { submit: true } => (
+                    "play.fill",
+                    "Po dokončení rovnou odešlu",
+                    "Klikni znovu na lištu nebo stiskni Fn pro zrušení odeslání.",
                 ),
             };
             unsafe {

@@ -318,6 +318,7 @@ impl WhisperingMvpApp {
         let enabled = !self.submit_after_transcription.load(Ordering::SeqCst);
         self.submit_after_transcription
             .store(enabled, Ordering::SeqCst);
+        self.update_bubble(BubbleState::Transcribing { submit: enabled });
         if enabled {
             self.set_status("Po přepisu se text vloží a odešle (Enter).");
         } else {
@@ -338,7 +339,7 @@ impl WhisperingMvpApp {
                     self.transcription_progress = 0;
                     self.submit_after_transcription.store(false, Ordering::SeqCst);
                     self.cancel_flag = Arc::new(AtomicBool::new(false));
-                    self.update_bubble(BubbleState::Transcribing);
+                    self.update_bubble(BubbleState::Transcribing { submit: false });
                     self.set_status(format!(
                         "Recording stopped ({:.1}s, {} Hz, {} ch). Transcribing...",
                         recording.duration_seconds, recording.sample_rate, recording.channels
