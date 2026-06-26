@@ -7,6 +7,7 @@ use crate::core::{
 use crate::bubble::{Bubble, BubbleState};
 use crate::hotkey::{FnTap, HotkeyMonitor, install_fn_tap_monitor};
 use crate::icons::{draw_checkmark_icon, draw_progress_icon, load_microphone_icon};
+use crate::languages::LANGUAGES;
 use crate::settings::Settings;
 #[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
@@ -18,7 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, Submenu};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 #[cfg(target_os = "macos")]
 use tray_icon::menu::ContextMenu;
 
@@ -93,6 +94,8 @@ pub struct WhisperingMvpApp {
     /// Idle-icon color picker items, paired with the color id they select
     /// (empty id = default monochrome).
     icon_color_items: Vec<(String, CheckMenuItem)>,
+    /// Language picker items, paired with the whisper language code they select.
+    language_items: Vec<(String, CheckMenuItem)>,
     quit_item: Option<MenuItem>,
     hotkey_monitor: Option<HotkeyMonitor>,
     waiting_for_accessibility_hotkey: bool,
@@ -134,6 +137,7 @@ impl WhisperingMvpApp {
             tray_icon: None,
             menu: None,
             icon_color_items: Vec::new(),
+            language_items: Vec::new(),
             copy_last_transcript_item: None,
             launch_at_login_item: None,
             status_item: None,
@@ -173,9 +177,11 @@ impl WhisperingMvpApp {
         let quit_item = MenuItem::new("Quit", true, None);
 
         let (icon_color_menu, icon_color_items) = self.build_icon_color_menu()?;
+        let (language_menu, language_items) = self.build_language_menu()?;
 
         menu.append(&status_item)?;
         menu.append(&copy_last_transcript_item)?;
+        menu.append(&language_menu)?;
         menu.append(&icon_color_menu)?;
         menu.append(&launch_at_login_item)?;
         menu.append(&quit_item)?;
@@ -195,6 +201,7 @@ impl WhisperingMvpApp {
         self.launch_at_login_item = Some(launch_at_login_item);
         self.status_item = Some(status_item);
         self.icon_color_items = icon_color_items;
+        self.language_items = language_items;
         self.quit_item = Some(quit_item);
         Ok(())
     }
@@ -242,6 +249,48 @@ impl WhisperingMvpApp {
             .iter()
             .find(|(id, ..)| *id == self.settings.icon_color)
             .map(|(_, _, r, g, b)| (*r, *g, *b))
+    }
+
+    /// Build the "Jazyk přepisu" submenu: Czech and English pinned on top, a
+    /// separator, then every other whisper language sorted by name.
+    fn build_language_menu(&self) -> UiResult<(Submenu, Vec<(String, CheckMenuItem)>)> {
+        let submenu = Submenu::new("Jazyk přepisu", true);
+        let mut items: Vec<(String, CheckMenuItem)> = Vec::new();
+
+        let pinned = ["cs", "en"];
+        for code in pinned {
+            let label = crate::languages::label_for(code);
+            let item = CheckMenuItem::new(label, true, self.settings.language == code, None);
+            submenu.append(&item)?;
+            items.push((code.to_string(), item));
+        }
+
+        submenu.append(&PredefinedMenuItem::separator())?;
+
+        let mut rest: Vec<(&str, &str)> = LANGUAGES
+            .iter()
+            .copied()
+            .filter(|(code, _)| !pinned.contains(code))
+            .collect();
+        rest.sort_by(|a, b| a.1.cmp(b.1));
+        for (code, label) in rest {
+            let item = CheckMenuItem::new(label, true, self.settings.language == code, None);
+            submenu.append(&item)?;
+            items.push((code.to_string(), item));
+        }
+
+        Ok((submenu, items))
+    }
+
+    /// Apply the picked transcription language: persist it and sync check marks.
+    fn select_language(&mut self, code: String) {
+        for (c, item) in &self.language_items {
+            item.set_checked(*c == code);
+        }
+        let label = crate::languages::label_for(&code).to_string();
+        self.settings.language = code;
+        self.settings.save();
+        self.set_status(format!("Jazyk přepisu: {label}"));
     }
 
     fn tooltip(&self) -> String {
@@ -492,11 +541,13 @@ impl WhisperingMvpApp {
                     let submit_flag = self.submit_after_transcription.clone();
                     let cancel_flag = self.cancel_flag.clone();
                     let audio_seconds = recording.duration_seconds;
+                    let language = self.settings.language.clone();
                     thread::spawn(move || {
                         let transcription_started = Instant::now();
                         let event = match transcribe_wav_file(
                             &model_manager,
                             &file_path,
+                            &language,
                             Some(&status_callback),
                             Some(&progress_cb),
                         ) {
@@ -687,6 +738,15 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                 {
                     let color_id = color_id.clone();
                     self.select_icon_color(color_id);
+                    return;
+                }
+                if let Some((code, _)) = self
+                    .language_items
+                    .iter()
+                    .find(|(_, item)| event.id == *item.id())
+                {
+                    let code = code.clone();
+                    self.select_language(code);
                     return;
                 }
                 if self

@@ -886,6 +886,7 @@ pub fn ensure_model_cached(
 pub fn transcribe_wav_file(
     model_manager: &ModelManager,
     file_path: &PathBuf,
+    language: &str,
     status_callback: Option<&StatusCallback>,
     progress_callback: Option<&ProgressCallback>,
 ) -> Result<String> {
@@ -966,7 +967,7 @@ pub fn transcribe_wav_file(
 
     let inference_started_at = Instant::now();
     let raw = whisper_model
-        .transcribe(&samples, Some(LANGUAGE), None)
+        .transcribe(&samples, Some(language), None)
         .map_err(|e| AppError::Message(format!("Transcription failed: {e}")))?;
     let transcript = strip_trailing_subtitle_credit(raw.trim());
 
