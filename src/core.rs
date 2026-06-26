@@ -66,6 +66,18 @@ pub enum AppError {
 pub type Result<T> = std::result::Result<T, AppError>;
 pub type StatusCallback = Arc<dyn Fn(String) + Send + Sync + 'static>;
 pub type ProgressCallback = Arc<dyn Fn(u8) + Send + Sync + 'static>;
+/// Structured model-download progress, used to drive the popup bubble's progress
+/// bar and ETA line. Emitted in addition to the human-readable status string.
+pub type ModelDownloadCallback = Arc<dyn Fn(ModelDownloadProgress) + Send + Sync + 'static>;
+
+#[derive(Clone, Debug)]
+pub struct ModelDownloadProgress {
+    /// Completed fraction in 0.0..=1.0 when the total size is known.
+    pub fraction: Option<f64>,
+    pub downloaded_bytes: u64,
+    /// Human ETA like "1:30" or "12s", or `None` when it can't be estimated yet.
+    pub eta: Option<String>,
+}
 
 #[derive(Debug)]
 pub struct AudioRecording {
@@ -603,7 +615,7 @@ impl ModelManager {
 
     pub fn preload_whisper(&self, status_callback: Option<&StatusCallback>) -> Result<()> {
         let started_at = Instant::now();
-        let model_path = ensure_model_available(status_callback)?;
+        let model_path = ensure_model_available(status_callback, None)?;
         println!(
             "[{:.1}s] [preload] starting Whisper preload from {}",
             ts(),
@@ -855,8 +867,11 @@ pub fn set_launch_at_login(enabled: bool) -> Result<()> {
     }
 }
 
-pub fn ensure_model_cached(status_callback: Option<&StatusCallback>) -> Result<()> {
-    let model_path = ensure_model_available(status_callback)?;
+pub fn ensure_model_cached(
+    status_callback: Option<&StatusCallback>,
+    download_callback: Option<&ModelDownloadCallback>,
+) -> Result<()> {
+    let model_path = ensure_model_available(status_callback, download_callback)?;
     println!(
         "[{:.1}s] [model] cache ready {}",
         ts(),
@@ -897,7 +912,7 @@ pub fn transcribe_wav_file(
     }
 
     let model_ready_started_at = Instant::now();
-    let model_path = ensure_model_available(status_callback)?;
+    let model_path = ensure_model_available(status_callback, None)?;
     let (engine_arc, loaded_now) = model_manager.get_or_load_whisper(model_path.clone())?;
     emit_status(status_callback, "Model ready. Transcribing...");
     println!(
@@ -972,7 +987,10 @@ pub fn transcribe_wav_file(
     Ok(transcript)
 }
 
-fn ensure_model_available(status_callback: Option<&StatusCallback>) -> Result<PathBuf> {
+fn ensure_model_available(
+    status_callback: Option<&StatusCallback>,
+    download_callback: Option<&ModelDownloadCallback>,
+) -> Result<PathBuf> {
     let _download_guard = model_download_lock()
         .lock()
         .map_err(|err| AppError::Message(format!("Model download mutex poisoned: {err}")))?;
@@ -1008,7 +1026,8 @@ fn ensure_model_available(status_callback: Option<&StatusCallback>) -> Result<Pa
     );
     emit_status(status_callback, "Downloading model: 0% · ETA --");
 
-    if let Err(err) = download_model_with_progress(&partial_path, status_callback) {
+    if let Err(err) = download_model_with_progress(&partial_path, status_callback, download_callback)
+    {
         let _ = std::fs::remove_file(&partial_path);
         return Err(err);
     }
@@ -1094,6 +1113,7 @@ fn emit_status(status_callback: Option<&StatusCallback>, status: impl Into<Strin
 fn download_model_with_progress(
     destination: &PathBuf,
     status_callback: Option<&StatusCallback>,
+    download_callback: Option<&ModelDownloadCallback>,
 ) -> Result<()> {
     let response = ureq::get(MODEL_URL)
         .call()
@@ -1121,20 +1141,52 @@ fn download_model_with_progress(
         downloaded += bytes_read as u64;
 
         if last_report.elapsed() >= Duration::from_millis(250) {
+            let elapsed = started_at.elapsed();
             emit_status(
                 status_callback,
-                format_download_progress(downloaded, total_bytes, started_at.elapsed()),
+                format_download_progress(downloaded, total_bytes, elapsed),
             );
+            emit_download_progress(download_callback, downloaded, total_bytes, elapsed);
             last_report = Instant::now();
         }
     }
 
     writer.flush()?;
+    let elapsed = started_at.elapsed();
     emit_status(
         status_callback,
-        format_download_progress(downloaded, total_bytes, started_at.elapsed()),
+        format_download_progress(downloaded, total_bytes, elapsed),
     );
+    emit_download_progress(download_callback, downloaded, total_bytes, elapsed);
     Ok(())
+}
+
+fn emit_download_progress(
+    download_callback: Option<&ModelDownloadCallback>,
+    downloaded: u64,
+    total_bytes: Option<u64>,
+    elapsed: Duration,
+) {
+    let Some(callback) = download_callback else {
+        return;
+    };
+
+    let fraction = total_bytes.and_then(|total| {
+        (total > 0).then(|| (downloaded as f64 / total as f64).clamp(0.0, 1.0))
+    });
+
+    let speed = downloaded as f64 / elapsed.as_secs_f64().max(0.001);
+    let eta = total_bytes.and_then(|total| {
+        let remaining = total.saturating_sub(downloaded) as f64;
+        (speed > 0.0 && downloaded > 0)
+            .then(|| format_eta(Duration::from_secs_f64(remaining / speed)))
+    });
+
+    callback(ModelDownloadProgress {
+        fraction,
+        downloaded_bytes: downloaded,
+        eta,
+    });
 }
 
 fn format_download_progress(

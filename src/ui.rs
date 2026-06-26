@@ -1,8 +1,8 @@
 use crate::core::{
-    ModelManager, ProgressCallback, RecorderState, StatusCallback, copy_and_paste_text,
-    copy_text_to_clipboard, ensure_model_cached, has_accessibility_permission,
-    is_launch_at_login_enabled, request_accessibility_permission_if_needed, set_launch_at_login,
-    transcribe_wav_file,
+    ModelDownloadCallback, ModelDownloadProgress, ModelManager, ProgressCallback, RecorderState,
+    StatusCallback, copy_and_paste_text, copy_text_to_clipboard, ensure_model_cached,
+    has_accessibility_permission, is_launch_at_login_enabled,
+    request_accessibility_permission_if_needed, set_launch_at_login, transcribe_wav_file,
 };
 use crate::bubble::{Bubble, BubbleState};
 use crate::hotkey::{FnTap, HotkeyMonitor, install_fn_tap_monitor};
@@ -52,6 +52,8 @@ enum UserEvent {
 enum WorkerEvent {
     Status(String),
     TranscriptionProgress(u8),
+    ModelDownload(ModelDownloadProgress),
+    ModelDownloadDone,
     Success(String),
     PasteFailed { transcript: String, error: String },
     Failed(String),
@@ -89,6 +91,9 @@ pub struct WhisperingMvpApp {
     /// paste, even if a new recording is started right after.
     cancel_flag: Arc<AtomicBool>,
     bubble: Option<Bubble>,
+    /// True while the startup model download is streaming progress into the
+    /// bubble, so we know to take the bubble down once it finishes.
+    downloading_model: bool,
 }
 
 impl WhisperingMvpApp {
@@ -120,6 +125,7 @@ impl WhisperingMvpApp {
             submit_after_transcription: Arc::new(AtomicBool::new(false)),
             cancel_flag: Arc::new(AtomicBool::new(false)),
             bubble: None,
+            downloading_model: false,
         }
     }
 
@@ -260,6 +266,10 @@ impl WhisperingMvpApp {
             self.submit_after_transcription.store(false, Ordering::SeqCst);
             self.hide_bubble();
             self.set_status("Přepis zrušen.");
+        } else if self.downloading_model {
+            // "Skrýt dialog": only dismiss the popup; the download keeps running
+            // in the background.
+            self.hide_bubble();
         }
     }
 
@@ -493,9 +503,19 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                 })));
 
                 let status_callback = status_callback(self.proxy.clone());
+                let download_callback = download_progress_callback(self.proxy.clone());
+                let done_proxy = self.proxy.clone();
                 thread::spawn(move || {
-                    if let Err(err) = ensure_model_cached(Some(&status_callback)) {
-                        status_callback(format!("Model download failed: {err}"));
+                    match ensure_model_cached(Some(&status_callback), Some(&download_callback)) {
+                        Ok(()) => {
+                            let _ = done_proxy
+                                .send_event(UserEvent::WorkerEvent(WorkerEvent::ModelDownloadDone));
+                        }
+                        Err(err) => {
+                            let _ = done_proxy
+                                .send_event(UserEvent::WorkerEvent(WorkerEvent::ModelDownloadDone));
+                            status_callback(format!("Model download failed: {err}"));
+                        }
                     }
                 });
 
@@ -591,6 +611,30 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                     let state = self.current_visual_state();
                     self.refresh_tray(state);
                 }
+                WorkerEvent::ModelDownload(progress) => {
+                    // A recording/transcription in flight owns the bubble; don't
+                    // steal it for the background download.
+                    if !self.recorder.is_recording() && !self.is_transcribing {
+                        let state = BubbleState::DownloadingModel {
+                            fraction: progress.fraction,
+                            detail: download_detail_text(&progress),
+                        };
+                        if self.downloading_model {
+                            self.update_bubble(state);
+                        } else {
+                            self.show_bubble(state);
+                        }
+                    }
+                    self.downloading_model = true;
+                }
+                WorkerEvent::ModelDownloadDone => {
+                    if self.downloading_model {
+                        self.downloading_model = false;
+                        if !self.recorder.is_recording() && !self.is_transcribing {
+                            self.hide_bubble();
+                        }
+                    }
+                }
                 WorkerEvent::Success(transcript) => {
                     self.is_transcribing = false;
                     self.transcription_progress = 0;
@@ -681,6 +725,30 @@ fn progress_callback(proxy: EventLoopProxy<UserEvent>) -> ProgressCallback {
             pct,
         )));
     })
+}
+
+fn download_progress_callback(proxy: EventLoopProxy<UserEvent>) -> ModelDownloadCallback {
+    Arc::new(move |progress| {
+        let _ = proxy.send_event(UserEvent::WorkerEvent(WorkerEvent::ModelDownload(progress)));
+    })
+}
+
+/// Second-line text for the download bubble, e.g. "45 % · zbývá 1:30" or, when
+/// the total size is unknown, "120 MB staženo".
+fn download_detail_text(progress: &ModelDownloadProgress) -> String {
+    match progress.fraction {
+        Some(fraction) => {
+            let percent = (fraction * 100.0).round() as u32;
+            match &progress.eta {
+                Some(eta) => format!("{percent} % · zbývá {eta}"),
+                None => format!("{percent} %"),
+            }
+        }
+        None => format!(
+            "{:.0} MB staženo",
+            progress.downloaded_bytes as f64 / 1_048_576.0
+        ),
+    }
 }
 
 fn icon_for_state(state: TrayVisualState) -> Icon {

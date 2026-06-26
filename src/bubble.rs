@@ -6,8 +6,15 @@
 //! the app the user is typing into — that would break paste-at-cursor.
 #![allow(unexpected_cfgs, deprecated, non_upper_case_globals)]
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq)]
 pub enum BubbleState {
+    /// Downloading the Whisper model on startup. `fraction` is the completed
+    /// ratio (0.0..=1.0) when the total size is known, else `None` for an
+    /// indeterminate bar. `detail` is the second-line text (percent + ETA).
+    DownloadingModel {
+        fraction: Option<f64>,
+        detail: String,
+    },
     Recording,
     /// Transcription in progress. `submit` is true once the user has armed
     /// "paste + Enter" mode, which changes the bubble's icon/title/hint.
@@ -58,9 +65,35 @@ mod macos {
         icon_view: id,
         title_label: id,
         info_label: id,
-        _cancel_button: id,
+        progress_bar: id,
+        button: id,
         _cancel_target: id,
     }
+
+    // Info-label frame for the wrapping hint text used by most states.
+    const INFO_FRAME: NSRect = NSRect {
+        origin: NSPoint { x: 16.0, y: 46.0 },
+        size: NSSize {
+            width: W - 32.0,
+            height: 34.0,
+        },
+    };
+    // Tighter single-line info frame used while downloading, leaving room below
+    // it for the progress bar.
+    const DOWNLOAD_INFO_FRAME: NSRect = NSRect {
+        origin: NSPoint { x: 16.0, y: 62.0 },
+        size: NSSize {
+            width: W - 32.0,
+            height: 18.0,
+        },
+    };
+    const PROGRESS_FRAME: NSRect = NSRect {
+        origin: NSPoint { x: 16.0, y: 48.0 },
+        size: NSSize {
+            width: W - 32.0,
+            height: 12.0,
+        },
+    };
 
     impl Bubble {
         pub fn new(on_cancel: Box<dyn Fn()>) -> Bubble {
@@ -116,25 +149,28 @@ mod macos {
                 );
                 let _: () = msg_send![card_content, addSubview: title_label];
 
-                let info_label = make_label(
-                    NSRect::new(NSPoint::new(16.0, 46.0), NSSize::new(W - 32.0, 34.0)),
-                    12.0,
-                    false,
-                    true,
-                );
+                let info_label = make_label(INFO_FRAME, 12.0, false, true);
                 let _: () = msg_send![card_content, addSubview: info_label];
 
-                // Cancel button wired to a small Objective-C target object.
+                // Determinate horizontal progress bar, shown only while the model
+                // is downloading.
+                let progress_bar: id = msg_send![class!(NSProgressIndicator), alloc];
+                let progress_bar: id = msg_send![progress_bar, initWithFrame: PROGRESS_FRAME];
+                let _: () = msg_send![progress_bar, setStyle: 0u64]; // NSProgressIndicatorStyleBar
+                let _: () = msg_send![progress_bar, setIndeterminate: NO];
+                let _: () = msg_send![progress_bar, setMinValue: 0.0f64];
+                let _: () = msg_send![progress_bar, setMaxValue: 1.0f64];
+                let _: () = msg_send![progress_bar, setHidden: YES];
+                let _: () = msg_send![card_content, addSubview: progress_bar];
+
+                // Action button wired to a small Objective-C target object. Its
+                // title and color change per state ("Zrušit" vs "Skrýt dialog").
                 let target = make_cancel_target(on_cancel);
                 let button: id = msg_send![class!(NSButton), alloc];
                 let button: id = msg_send![button,
                     initWithFrame: NSRect::new(NSPoint::new(16.0, 10.0), NSSize::new(W - 32.0, 30.0))];
-                let btitle = NSString::alloc(nil).init_str("Zrušit");
-                let _: () = msg_send![button, setTitle: btitle];
                 let _: () = msg_send![button, setBezelStyle: 1u64]; // rounded
                 let _: () = msg_send![button, setButtonType: 7u64]; // momentary push-in
-                let red: id = msg_send![class!(NSColor), systemRedColor];
-                let _: () = msg_send![button, setBezelColor: red];
                 let _: () = msg_send![button, setTarget: target];
                 let _: () = msg_send![button, setAction: sel!(onCancel:)];
                 let _: () = msg_send![card_content, addSubview: button];
@@ -146,7 +182,8 @@ mod macos {
                     icon_view,
                     title_label,
                     info_label,
-                    _cancel_button: button,
+                    progress_bar,
+                    button,
                     _cancel_target: target,
                 }
             }
@@ -192,7 +229,11 @@ mod macos {
         }
 
         pub fn update(&self, state: BubbleState) {
-            let (symbol, title, info) = match state {
+            let downloading = matches!(state, BubbleState::DownloadingModel { .. });
+            let (symbol, title, info): (&str, &str, &str) = match &state {
+                BubbleState::DownloadingModel { detail, .. } => {
+                    ("arrow.down.circle.fill", "Stahuji model…", detail.as_str())
+                }
                 BubbleState::Recording => (
                     "checkmark.circle.fill",
                     "Nahrávám…",
@@ -218,6 +259,40 @@ mod macos {
                 let _: () = msg_send![self.title_label, setStringValue: t];
                 let i = NSString::alloc(nil).init_str(info);
                 let _: () = msg_send![self.info_label, setStringValue: i];
+                let _: () = msg_send![self.info_label,
+                    setFrame: if downloading { DOWNLOAD_INFO_FRAME } else { INFO_FRAME }];
+
+                // Progress bar: visible (and indeterminate when total unknown)
+                // only while downloading.
+                if let BubbleState::DownloadingModel { fraction, .. } = &state {
+                    let _: () = msg_send![self.progress_bar, setHidden: NO];
+                    match fraction {
+                        Some(value) => {
+                            let _: () = msg_send![self.progress_bar, stopAnimation: nil];
+                            let _: () = msg_send![self.progress_bar, setIndeterminate: NO];
+                            let _: () = msg_send![self.progress_bar, setDoubleValue: *value];
+                        }
+                        None => {
+                            let _: () = msg_send![self.progress_bar, setIndeterminate: YES];
+                            let _: () = msg_send![self.progress_bar, startAnimation: nil];
+                        }
+                    }
+                } else {
+                    let _: () = msg_send![self.progress_bar, stopAnimation: nil];
+                    let _: () = msg_send![self.progress_bar, setHidden: YES];
+                }
+
+                // Button: a neutral "Skrýt dialog" while downloading (the download
+                // keeps running in the background), a red "Zrušit" otherwise.
+                let (btitle, bezel): (&str, id) = if downloading {
+                    ("Skrýt dialog", nil)
+                } else {
+                    ("Zrušit", msg_send![class!(NSColor), systemRedColor])
+                };
+                let bt = NSString::alloc(nil).init_str(btitle);
+                let _: () = msg_send![self.button, setTitle: bt];
+                let _: () = msg_send![self.button, setBezelColor: bezel];
+
                 // Repaint the card in case appearance changed.
                 let _: () = msg_send![self.card, setNeedsDisplay: YES];
             }
