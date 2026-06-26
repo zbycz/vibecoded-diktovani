@@ -138,7 +138,7 @@ mod macos {
                 // Icon (system symbol), title, info, cancel button.
                 let icon_view: id = msg_send![class!(NSImageView), alloc];
                 let icon_view: id = msg_send![icon_view,
-                    initWithFrame: NSRect::new(NSPoint::new(14.0, CH - 36.0), NSSize::new(26.0, 26.0))];
+                    initWithFrame: NSRect::new(NSPoint::new(14.0, CH - 33.0), NSSize::new(26.0, 26.0))];
                 let _: () = msg_send![card_content, addSubview: icon_view];
 
                 let title_label = make_label(
