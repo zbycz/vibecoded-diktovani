@@ -1111,8 +1111,113 @@ pub fn append_transcription_log(
 
 /// Estimate how long inference will take for `audio_secs` of audio, used to
 /// drive the progress bar. Linear model `base + rtf * audio`.
+///
+/// The coefficients are derived from the user's own `timings.csv` so the
+/// estimate adapts to their hardware: a faster machine produces smaller
+/// recorded times, which lower the computed rtf, which shortens future
+/// estimates. We recompute on every call (the file is tiny). Until enough real
+/// samples accumulate we fall back to the static reference formula.
 fn estimate_transcription_secs(audio_secs: f32) -> f32 {
-    (ESTIMATE_BASE_SECS + ESTIMATE_RTF * audio_secs).max(0.5)
+    let rows = read_timings();
+    let (base, rtf) = match estimate_coefficients(&rows) {
+        Some(coeffs) => coeffs,
+        None => (ESTIMATE_BASE_SECS, ESTIMATE_RTF),
+    };
+    (base + rtf * audio_secs).max(0.5)
+}
+
+/// Number of valid samples required before we trust `timings.csv` over the
+/// static reference formula.
+const ESTIMATE_MIN_SAMPLES: usize = 5;
+/// Clips shorter than this are treated as "fixed overhead" samples; longer
+/// clips are used to measure the marginal real-time factor.
+const ESTIMATE_SHORT_CLIP_SECS: f32 = 8.0;
+/// Percentile used for the marginal real-time factor. Slightly conservative so
+/// the bar reaches its cap roughly when inference finishes, rather than
+/// stalling there early.
+const ESTIMATE_PERCENTILE: f32 = 0.90;
+
+/// Derive `(base_secs, rtf)` from recorded `(audio_secs, transcription_secs)`
+/// samples, or `None` when there are too few to be meaningful.
+fn estimate_coefficients(rows: &[(f32, f32)]) -> Option<(f32, f32)> {
+    if rows.len() < ESTIMATE_MIN_SAMPLES {
+        return None;
+    }
+
+    // Marginal cost per second of audio, measured on longer clips (where the
+    // fixed overhead is amortised) at the 90th percentile.
+    let mut long_rtfs: Vec<f32> = rows
+        .iter()
+        .filter(|(a, _)| *a >= ESTIMATE_SHORT_CLIP_SECS)
+        .map(|(a, t)| t / a)
+        .collect();
+    let rtf = percentile(&mut long_rtfs, ESTIMATE_PERCENTILE).unwrap_or(ESTIMATE_RTF);
+
+    // Fixed overhead: the median transcription time of short clips (robust to
+    // the occasional cold-start outlier).
+    let mut short_times: Vec<f32> = rows
+        .iter()
+        .filter(|(a, _)| *a < ESTIMATE_SHORT_CLIP_SECS)
+        .map(|(_, t)| *t)
+        .collect();
+    let base = median(&mut short_times).unwrap_or(ESTIMATE_BASE_SECS);
+
+    Some((base, rtf))
+}
+
+/// Read `(audio_secs, transcription_secs)` rows from `timings.csv`, skipping the
+/// header and any malformed or non-positive entries.
+fn read_timings() -> Vec<(f32, f32)> {
+    let Ok(model_path) = cache_model_path() else {
+        return Vec::new();
+    };
+    let Some(csv_path) = model_path.parent().map(|dir| dir.join("timings.csv")) else {
+        return Vec::new();
+    };
+    let Ok(content) = std::fs::read_to_string(&csv_path) else {
+        return Vec::new();
+    };
+
+    let mut rows = Vec::new();
+    for line in content.lines().skip(1) {
+        let mut fields = line.split(',');
+        let (Some(audio), Some(transcription)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        if let (Ok(audio), Ok(transcription)) =
+            (audio.trim().parse::<f32>(), transcription.trim().parse::<f32>())
+            && audio > 0.0
+            && transcription > 0.0
+        {
+            rows.push((audio, transcription));
+        }
+    }
+    rows
+}
+
+/// Nearest-rank percentile (`p` in 0.0..=1.0). Sorts `values` in place.
+fn percentile(values: &mut [f32], p: f32) -> Option<f32> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let rank = (p * values.len() as f32).ceil() as usize;
+    let index = rank.saturating_sub(1).min(values.len() - 1);
+    Some(values[index])
+}
+
+/// Median of `values`. Sorts `values` in place.
+fn median(values: &mut [f32]) -> Option<f32> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = values.len();
+    Some(if n % 2 == 1 {
+        values[n / 2]
+    } else {
+        (values[n / 2 - 1] + values[n / 2]) / 2.0
+    })
 }
 
 fn model_download_lock() -> &'static Mutex<()> {
@@ -1268,7 +1373,49 @@ fn strip_trailing_subtitle_credit(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_trailing_subtitle_credit;
+    use super::{
+        ESTIMATE_BASE_SECS, ESTIMATE_RTF, estimate_coefficients, median, percentile,
+        strip_trailing_subtitle_credit,
+    };
+
+    #[test]
+    fn percentile_nearest_rank() {
+        let mut v = [1.0, 2.0, 3.0, 4.0, 5.0];
+        assert_eq!(percentile(&mut v, 0.9), Some(5.0));
+        assert_eq!(percentile(&mut v, 0.5), Some(3.0));
+        assert_eq!(percentile(&mut [], 0.9), None);
+    }
+
+    #[test]
+    fn median_odd_and_even() {
+        assert_eq!(median(&mut [3.0, 1.0, 2.0]), Some(2.0));
+        assert_eq!(median(&mut [1.0, 2.0, 3.0, 4.0]), Some(2.5));
+        assert_eq!(median(&mut []), None);
+    }
+
+    #[test]
+    fn estimate_coefficients_falls_back_when_too_few_samples() {
+        let rows = [(10.0, 3.0), (20.0, 6.0)];
+        assert_eq!(estimate_coefficients(&rows), None);
+    }
+
+    #[test]
+    fn estimate_coefficients_uses_recorded_samples() {
+        // Short clips set the base (median overhead); long clips set the rtf.
+        let rows = [
+            (2.0, 2.0),
+            (3.0, 4.0),
+            (4.0, 3.0),
+            (20.0, 6.0),
+            (40.0, 12.0),
+            (80.0, 24.0),
+        ];
+        let (base, rtf) = estimate_coefficients(&rows).expect("enough samples");
+        assert!((base - 3.0).abs() < 1e-3, "base was {base}");
+        assert!((rtf - 0.3).abs() < 1e-3, "rtf was {rtf}");
+        // Adapting beats the static reference for this faster-than-default set.
+        assert!(rtf < ESTIMATE_RTF + 0.05 && base < ESTIMATE_BASE_SECS + 2.0);
+    }
 
     #[test]
     fn strips_credit_with_trailing_period() {
