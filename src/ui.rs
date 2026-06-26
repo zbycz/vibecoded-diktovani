@@ -1,6 +1,6 @@
 use crate::core::{
-    ModelDownloadCallback, ModelDownloadProgress, ModelManager, ProgressCallback, RecorderState,
-    StatusCallback, copy_and_paste_text, copy_text_to_clipboard, ensure_model_cached,
+    LOG_PATH, ModelDownloadCallback, ModelDownloadProgress, ModelManager, ProgressCallback,
+    RecorderState, StatusCallback, copy_and_paste_text, copy_text_to_clipboard, ensure_model_cached,
     has_accessibility_permission, is_launch_at_login_enabled,
     request_accessibility_permission_if_needed, set_launch_at_login, transcribe_wav_file,
 };
@@ -18,6 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem};
+#[cfg(target_os = "macos")]
+use tray_icon::menu::ContextMenu;
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::application::ApplicationHandler;
 use winit::event::StartCause;
@@ -70,6 +72,8 @@ enum TrayVisualState {
 pub struct WhisperingMvpApp {
     proxy: EventLoopProxy<UserEvent>,
     tray_icon: Option<TrayIcon>,
+    /// Kept so we can reach the native NSMenu (e.g. to style the Status item).
+    menu: Option<Menu>,
     copy_last_transcript_item: Option<MenuItem>,
     launch_at_login_item: Option<CheckMenuItem>,
     status_item: Option<MenuItem>,
@@ -110,6 +114,7 @@ impl WhisperingMvpApp {
         Self {
             proxy,
             tray_icon: None,
+            menu: None,
             copy_last_transcript_item: None,
             launch_at_login_item: None,
             status_item: None,
@@ -129,7 +134,9 @@ impl WhisperingMvpApp {
         }
     }
 
-    fn build_tray_icon(&self) -> UiResult<(TrayIcon, MenuItem, CheckMenuItem, MenuItem, MenuItem)> {
+    fn build_tray_icon(
+        &self,
+    ) -> UiResult<(TrayIcon, Menu, MenuItem, CheckMenuItem, MenuItem, MenuItem)> {
         let menu = Menu::new();
         let copy_last_transcript_item = MenuItem::new(
             copy_last_transcript_menu_text(&self.last_transcript),
@@ -142,7 +149,9 @@ impl WhisperingMvpApp {
             is_launch_at_login_enabled(),
             None,
         );
-        let status_item = MenuItem::new(status_menu_text(&self.status), false, None);
+        // Enabled so clicking it opens the log; it's re-styled to look faded via
+        // a gray attributed title (see `apply_status_item_title`).
+        let status_item = MenuItem::new(status_menu_text(&self.status), true, None);
         let quit_item = MenuItem::new("Quit", true, None);
         menu.append(&status_item)?;
         menu.append(&copy_last_transcript_item)?;
@@ -152,7 +161,7 @@ impl WhisperingMvpApp {
         let tray_icon = TrayIconBuilder::new()
             .with_tooltip(self.tooltip())
             .with_icon(icon_for_state(TrayVisualState::Idle))
-            .with_menu(Box::new(menu))
+            .with_menu(Box::new(menu.clone()))
             .with_icon_as_template(true)
             .with_menu_on_left_click(false)
             .with_menu_on_right_click(true)
@@ -160,6 +169,7 @@ impl WhisperingMvpApp {
 
         Ok((
             tray_icon,
+            menu,
             copy_last_transcript_item,
             launch_at_login_item,
             status_item,
@@ -179,9 +189,7 @@ impl WhisperingMvpApp {
         if let Err(err) = tray_icon.set_tooltip(Some(self.tooltip())) {
             eprintln!("[tray] failed to update tooltip: {err}");
         }
-        if let Some(status_item) = self.status_item.as_ref() {
-            status_item.set_text(status_menu_text(&self.status));
-        }
+        self.apply_status_item_title(&status_menu_text(&self.status));
         if let Some(copy_last_transcript_item) = self.copy_last_transcript_item.as_ref() {
             copy_last_transcript_item
                 .set_text(copy_last_transcript_menu_text(&self.last_transcript));
@@ -322,6 +330,60 @@ impl WhisperingMvpApp {
     #[cfg(not(target_os = "macos"))]
     fn status_item_screen_rect(&self) -> Option<(f64, f64, f64, f64)> {
         None
+    }
+
+    /// Set the Status item's title. On macOS we draw it with a gray attributed
+    /// title so it keeps the "faded" look of a disabled item while still being
+    /// clickable (clicking it opens the log).
+    #[cfg(target_os = "macos")]
+    #[allow(deprecated)]
+    fn apply_status_item_title(&self, text: &str) {
+        use cocoa::base::{id, nil};
+        use cocoa::foundation::NSString;
+        use objc::{class, msg_send, sel, sel_impl};
+
+        let fallback = || {
+            if let Some(item) = self.status_item.as_ref() {
+                item.set_text(text);
+            }
+        };
+
+        let Some(menu) = self.menu.as_ref() else {
+            return fallback();
+        };
+        let ns_menu = ContextMenu::ns_menu(menu) as id;
+        if ns_menu.is_null() {
+            return fallback();
+        }
+        unsafe {
+            // The Status item is appended first, so it lives at index 0.
+            let item: id = msg_send![ns_menu, itemAtIndex: 0isize];
+            if item.is_null() {
+                return fallback();
+            }
+            let s = NSString::alloc(nil).init_str(text);
+            let color: id = msg_send![class!(NSColor), disabledControlTextColor];
+            // NSForegroundColorAttributeName's legacy underlying value is "NSColor".
+            let key = NSString::alloc(nil).init_str("NSColor");
+            let attrs: id =
+                msg_send![class!(NSDictionary), dictionaryWithObject: color forKey: key];
+            let attr: id = msg_send![class!(NSAttributedString), alloc];
+            let attr: id = msg_send![attr, initWithString: s attributes: attrs];
+            let _: () = msg_send![item, setAttributedTitle: attr];
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn apply_status_item_title(&self, text: &str) {
+        if let Some(item) = self.status_item.as_ref() {
+            item.set_text(text);
+        }
+    }
+
+    fn open_log(&mut self) {
+        if let Err(err) = std::process::Command::new("open").arg(LOG_PATH).spawn() {
+            self.set_status(format!("Nepodařilo se otevřít log: {err}"));
+        }
     }
 
     fn toggle_submit_after_transcription(&mut self) {
@@ -485,12 +547,14 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
         match self.build_tray_icon() {
             Ok((
                 tray_icon,
+                menu,
                 copy_last_transcript_item,
                 launch_at_login_item,
                 status_item,
                 quit_item,
             )) => {
                 self.tray_icon = Some(tray_icon);
+                self.menu = Some(menu);
                 self.copy_last_transcript_item = Some(copy_last_transcript_item);
                 self.launch_at_login_item = Some(launch_at_login_item);
                 self.status_item = Some(status_item);
@@ -554,6 +618,14 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
             }) => self.handle_primary_action(),
             UserEvent::TrayIconEvent(_) => {}
             UserEvent::MenuEvent(event) => {
+                if self
+                    .status_item
+                    .as_ref()
+                    .is_some_and(|item| event.id == *item.id())
+                {
+                    self.open_log();
+                    return;
+                }
                 if self
                     .copy_last_transcript_item
                     .as_ref()

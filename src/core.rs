@@ -52,6 +52,9 @@ pub const MODEL_URL: &str =
 pub const MODEL_FILENAME: &str = "ggml-large-v3-turbo.bin";
 pub const APP_IDENTIFIER: &str = "com.example.diktovani";
 pub const LANGUAGE: &str = "cs";
+/// Where stdout/stderr are mirrored (see `main::redirect_output_to_log`); the
+/// Status menu item opens this file.
+pub const LOG_PATH: &str = "/tmp/diktovani.log";
 
 #[derive(Debug, Error)]
 pub enum AppError {

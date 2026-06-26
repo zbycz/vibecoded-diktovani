@@ -15,7 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn redirect_output_to_log() {
     use std::os::unix::io::IntoRawFd;
-    let log_path = "/tmp/diktovani.log";
+    let log_path = core::LOG_PATH;
     let Ok(file) = OpenOptions::new().create(true).append(true).open(log_path) else {
         return;
     };
