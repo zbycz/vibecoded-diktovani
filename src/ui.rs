@@ -183,6 +183,7 @@ impl WhisperingMvpApp {
         menu.append(&copy_last_transcript_item)?;
         menu.append(&language_menu)?;
         menu.append(&icon_color_menu)?;
+        menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&launch_at_login_item)?;
         menu.append(&quit_item)?;
 
