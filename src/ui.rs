@@ -7,6 +7,7 @@ use crate::core::{
 use crate::bubble::{Bubble, BubbleState};
 use crate::hotkey::{FnTap, HotkeyMonitor, install_fn_tap_monitor};
 use crate::icons::{draw_checkmark_icon, draw_progress_icon, load_microphone_icon};
+use crate::settings::Settings;
 #[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
@@ -17,9 +18,21 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, Submenu};
 #[cfg(target_os = "macos")]
 use tray_icon::menu::ContextMenu;
+
+/// Pastel palette offered under "Barva ikony" for the idle microphone icon.
+/// Tuple is (id stored in settings, Czech label, sRGB red, green, blue).
+pub const ICON_COLORS: &[(&str, &str, f64, f64, f64)] = &[
+    ("coral", "Korálová", 1.0, 0.604, 0.635),
+    ("peach", "Broskvová", 1.0, 0.718, 0.698),
+    ("yellow", "Žlutá", 0.992, 0.894, 0.651),
+    ("mint", "Mátová", 0.710, 0.918, 0.843),
+    ("sky", "Nebeská", 0.635, 0.824, 1.0),
+    ("lavender", "Levandulová", 0.780, 0.698, 0.871),
+    ("pink", "Růžová", 1.0, 0.718, 0.871),
+];
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::application::ApplicationHandler;
 use winit::event::StartCause;
@@ -77,6 +90,9 @@ pub struct WhisperingMvpApp {
     copy_last_transcript_item: Option<MenuItem>,
     launch_at_login_item: Option<CheckMenuItem>,
     status_item: Option<MenuItem>,
+    /// Idle-icon color picker items, paired with the color id they select
+    /// (empty id = default monochrome).
+    icon_color_items: Vec<(String, CheckMenuItem)>,
     quit_item: Option<MenuItem>,
     hotkey_monitor: Option<HotkeyMonitor>,
     waiting_for_accessibility_hotkey: bool,
@@ -98,6 +114,8 @@ pub struct WhisperingMvpApp {
     /// True while the startup model download is streaming progress into the
     /// bubble, so we know to take the bubble down once it finishes.
     downloading_model: bool,
+    /// Persisted user preferences (idle icon color, transcription language).
+    settings: Settings,
 }
 
 impl WhisperingMvpApp {
@@ -115,6 +133,7 @@ impl WhisperingMvpApp {
             proxy,
             tray_icon: None,
             menu: None,
+            icon_color_items: Vec::new(),
             copy_last_transcript_item: None,
             launch_at_login_item: None,
             status_item: None,
@@ -131,12 +150,11 @@ impl WhisperingMvpApp {
             cancel_flag: Arc::new(AtomicBool::new(false)),
             bubble: None,
             downloading_model: false,
+            settings: Settings::load(),
         }
     }
 
-    fn build_tray_icon(
-        &self,
-    ) -> UiResult<(TrayIcon, Menu, MenuItem, CheckMenuItem, MenuItem, MenuItem)> {
+    fn build_tray_icon(&mut self) -> UiResult<()> {
         let menu = Menu::new();
         let copy_last_transcript_item = MenuItem::new(
             copy_last_transcript_menu_text(&self.last_transcript),
@@ -153,8 +171,12 @@ impl WhisperingMvpApp {
         // a gray attributed title (see `apply_status_item_title`).
         let status_item = MenuItem::new(status_menu_text(&self.status), true, None);
         let quit_item = MenuItem::new("Quit", true, None);
+
+        let (icon_color_menu, icon_color_items) = self.build_icon_color_menu()?;
+
         menu.append(&status_item)?;
         menu.append(&copy_last_transcript_item)?;
+        menu.append(&icon_color_menu)?;
         menu.append(&launch_at_login_item)?;
         menu.append(&quit_item)?;
 
@@ -167,14 +189,59 @@ impl WhisperingMvpApp {
             .with_menu_on_right_click(true)
             .build()?;
 
-        Ok((
-            tray_icon,
-            menu,
-            copy_last_transcript_item,
-            launch_at_login_item,
-            status_item,
-            quit_item,
-        ))
+        self.tray_icon = Some(tray_icon);
+        self.menu = Some(menu);
+        self.copy_last_transcript_item = Some(copy_last_transcript_item);
+        self.launch_at_login_item = Some(launch_at_login_item);
+        self.status_item = Some(status_item);
+        self.icon_color_items = icon_color_items;
+        self.quit_item = Some(quit_item);
+        Ok(())
+    }
+
+    /// Build the "Barva ikony" submenu: a default (monochrome) entry plus the
+    /// pastel palette, with the current selection checked.
+    fn build_icon_color_menu(&self) -> UiResult<(Submenu, Vec<(String, CheckMenuItem)>)> {
+        let submenu = Submenu::new("Barva ikony", true);
+        let mut items: Vec<(String, CheckMenuItem)> = Vec::new();
+
+        let default_item = CheckMenuItem::new(
+            "Výchozí (automatická)",
+            true,
+            self.settings.icon_color.is_empty(),
+            None,
+        );
+        submenu.append(&default_item)?;
+        items.push((String::new(), default_item));
+
+        for (id, label, ..) in ICON_COLORS {
+            let item = CheckMenuItem::new(*label, true, self.settings.icon_color == *id, None);
+            submenu.append(&item)?;
+            items.push(((*id).to_string(), item));
+        }
+
+        Ok((submenu, items))
+    }
+
+    /// Apply the picked idle-icon color: persist it, sync the check marks, and
+    /// repaint the tray.
+    fn select_icon_color(&mut self, color_id: String) {
+        for (id, item) in &self.icon_color_items {
+            item.set_checked(*id == color_id);
+        }
+        self.settings.icon_color = color_id;
+        self.settings.save();
+        let state = self.current_visual_state();
+        self.refresh_tray(state);
+    }
+
+    /// sRGB components of the selected idle-icon color, or `None` for the
+    /// default monochrome template.
+    fn idle_color(&self) -> Option<(f64, f64, f64)> {
+        ICON_COLORS
+            .iter()
+            .find(|(id, ..)| *id == self.settings.icon_color)
+            .map(|(_, _, r, g, b)| (*r, *g, *b))
     }
 
     fn tooltip(&self) -> String {
@@ -195,7 +262,7 @@ impl WhisperingMvpApp {
                 .set_text(copy_last_transcript_menu_text(&self.last_transcript));
             copy_last_transcript_item.set_enabled(!self.last_transcript.trim().is_empty());
         }
-        if apply_macos_symbol(tray_icon, state) {
+        if apply_macos_symbol(tray_icon, state, self.idle_color()) {
             return;
         }
         if let Err(err) = tray_icon.set_icon_with_as_template(Some(icon_for_state(state)), true) {
@@ -545,20 +612,7 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
         }
 
         match self.build_tray_icon() {
-            Ok((
-                tray_icon,
-                menu,
-                copy_last_transcript_item,
-                launch_at_login_item,
-                status_item,
-                quit_item,
-            )) => {
-                self.tray_icon = Some(tray_icon);
-                self.menu = Some(menu);
-                self.copy_last_transcript_item = Some(copy_last_transcript_item);
-                self.launch_at_login_item = Some(launch_at_login_item);
-                self.status_item = Some(status_item);
-                self.quit_item = Some(quit_item);
+            Ok(()) => {
                 self.refresh_tray(TrayVisualState::Idle);
 
                 let cancel_proxy = self.proxy.clone();
@@ -624,6 +678,15 @@ impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
                     .is_some_and(|item| event.id == *item.id())
                 {
                     self.open_log();
+                    return;
+                }
+                if let Some((color_id, _)) = self
+                    .icon_color_items
+                    .iter()
+                    .find(|(_, item)| event.id == *item.id())
+                {
+                    let color_id = color_id.clone();
+                    self.select_icon_color(color_id);
                     return;
                 }
                 if self
@@ -832,7 +895,13 @@ fn icon_for_state(state: TrayVisualState) -> Icon {
 }
 
 #[cfg(target_os = "macos")]
-fn apply_macos_symbol(tray_icon: &TrayIcon, state: TrayVisualState) -> bool {
+fn apply_macos_symbol(
+    tray_icon: &TrayIcon,
+    state: TrayVisualState,
+    idle_color: Option<(f64, f64, f64)>,
+) -> bool {
+    use objc2_app_kit::{NSColor, NSImageSymbolConfiguration};
+
     let Some(status_item) = tray_icon.ns_status_item() else {
         return false;
     };
@@ -857,12 +926,28 @@ fn apply_macos_symbol(tray_icon: &TrayIcon, state: TrayVisualState) -> bool {
         return false;
     };
 
+    // Tint the idle microphone with the chosen pastel color; everything else
+    // stays a monochrome menu-bar template that adapts to light/dark.
+    if let (TrayVisualState::Idle, Some((r, g, b))) = (state, idle_color) {
+        let color = NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 1.0);
+        let config = NSImageSymbolConfiguration::configurationWithHierarchicalColor(&color);
+        if let Some(colored) = image.imageWithSymbolConfiguration(&config) {
+            colored.setTemplate(false);
+            button.setImage(Some(&colored));
+            return true;
+        }
+    }
+
     image.setTemplate(true);
     button.setImage(Some(&image));
     true
 }
 
 #[cfg(not(target_os = "macos"))]
-fn apply_macos_symbol(_tray_icon: &TrayIcon, _state: TrayVisualState) -> bool {
+fn apply_macos_symbol(
+    _tray_icon: &TrayIcon,
+    _state: TrayVisualState,
+    _idle_color: Option<(f64, f64, f64)>,
+) -> bool {
     false
 }

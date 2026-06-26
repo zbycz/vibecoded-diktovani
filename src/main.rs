@@ -2,6 +2,7 @@ mod bubble;
 mod core;
 mod hotkey;
 mod icons;
+mod settings;
 mod ui;
 mod whisper;
 

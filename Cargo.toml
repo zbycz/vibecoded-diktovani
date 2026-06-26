@@ -26,7 +26,7 @@ block = "0.1.6"
 cocoa = "0.26.1"
 objc = "0.2.7"
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSButton", "NSImage", "NSStatusBarButton", "NSStatusItem"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSButton", "NSColor", "NSImage", "NSStatusBarButton", "NSStatusItem"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString"] }
 whisper-rs = { version = "0.13.2", features = ["metal", "whisper-cpp-log"] }
 
