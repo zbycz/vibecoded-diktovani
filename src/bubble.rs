@@ -237,17 +237,17 @@ mod macos {
                 BubbleState::Recording => (
                     "checkmark.circle.fill",
                     "Nahrávám…",
-                    "Klikni na háček ✓ v liště nebo stiskni Fn pro spuštění přepisu.",
+                    "Klikni na háček ✓ v liště pro spuštění přepisu.",
                 ),
                 BubbleState::Transcribing { submit: false } => (
                     "waveform",
                     "Přepisuji…",
-                    "Klávesou Fn (nebo klikem na lištu) zapneš odeslání Enterem.",
+                    "Klikni ještě na lištu a zpráva se pak automaticky odešle.",
                 ),
                 BubbleState::Transcribing { submit: true } => (
                     "play.fill",
-                    "Po dokončení rovnou odešlu",
-                    "Klikni znovu na lištu nebo stiskni Fn pro zrušení odeslání.",
+                    "Po dokončení rovnou dám Enter",
+                    "Klikni znovu na lištu pro zrušení odeslání.",
                 ),
             };
             unsafe {
