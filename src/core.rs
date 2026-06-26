@@ -56,6 +56,13 @@ pub const LANGUAGE: &str = "cs";
 /// Status menu item opens this file.
 pub const LOG_PATH: &str = "/tmp/diktovani.log";
 
+/// Default fixed inference overhead, in seconds (model already warm).
+const ESTIMATE_BASE_SECS: f32 = 2.0;
+/// Default real-time factor: inference seconds per second of audio. Fitted by
+/// least squares on a reference M1 run; overridden by `timings.csv` once enough
+/// real samples exist.
+const ESTIMATE_RTF: f32 = 0.29;
+
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("{0}")]
@@ -939,9 +946,8 @@ pub fn transcribe_wav_file(
     let ticker_handle: Option<thread::JoinHandle<()>> = progress_callback.map(|cb| {
         let cb = cb.clone();
         let done = progress_done.clone();
-        // Empirical formula (M1, large-v3-turbo): inference ≈ 2.6s + audio_secs / 12
         let audio_secs = samples.len() as f32 / 16000.0;
-        let estimated_secs = 3.0 + audio_secs / 12.0;
+        let estimated_secs = estimate_transcription_secs(audio_secs);
         thread::spawn(move || {
             let started = Instant::now();
             loop {
@@ -1101,6 +1107,12 @@ pub fn append_transcription_log(
     ) {
         eprintln!("[timings] failed to write row: {err}");
     }
+}
+
+/// Estimate how long inference will take for `audio_secs` of audio, used to
+/// drive the progress bar. Linear model `base + rtf * audio`.
+fn estimate_transcription_secs(audio_secs: f32) -> f32 {
+    (ESTIMATE_BASE_SECS + ESTIMATE_RTF * audio_secs).max(0.5)
 }
 
 fn model_download_lock() -> &'static Mutex<()> {
