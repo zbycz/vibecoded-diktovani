@@ -946,7 +946,7 @@ pub fn transcribe_wav_file(
                     break;
                 }
                 let elapsed = started.elapsed().as_secs_f32();
-                let pct = ((elapsed / estimated_secs) * 100.0).clamp(0.0, 95.0) as u8;
+                let pct = ((elapsed / estimated_secs) * 100.0).clamp(0.0, 75.0) as u8;
                 println!("[{:.1}s] [transcribe] progress ~{}%", ts(), pct);
                 cb(pct);
             }
