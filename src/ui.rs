@@ -893,11 +893,13 @@ fn preview_text(text: &str) -> String {
 
 fn status_menu_text(status: &str) -> String {
     let compact = status.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut text = compact.chars().take(80).collect::<String>();
-    if compact.chars().count() > 80 {
-        text.push_str("...");
+    // Same total limit as the copy item: 52 chars.
+    let full = format!("Status: {compact}");
+    let mut out = full.chars().take(52).collect::<String>();
+    if full.chars().count() > 52 {
+        out.push_str("…");
     }
-    format!("Status: {text}")
+    out
 }
 
 fn copy_last_transcript_menu_text(transcript: &str) -> String {
@@ -905,7 +907,13 @@ fn copy_last_transcript_menu_text(transcript: &str) -> String {
     if compact.is_empty() {
         return "Zkopírovat poslední přepis: —".to_string();
     }
-    format!("Zkopírovat poslední přepis: {compact}")
+    // Total limit = 2 × len("Zkopírovat poslední přepis") = 52 chars.
+    let full = format!("Zkopírovat poslední přepis: {compact}");
+    let mut out = full.chars().take(52).collect::<String>();
+    if full.chars().count() > 52 {
+        out.push_str("…");
+    }
+    out
 }
 
 fn status_callback(proxy: EventLoopProxy<UserEvent>) -> StatusCallback {
