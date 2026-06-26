@@ -23,16 +23,16 @@ use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuIt
 #[cfg(target_os = "macos")]
 use tray_icon::menu::ContextMenu;
 
-/// Pastel palette offered under "Barva ikony" for the idle microphone icon.
+/// Palette offered under "Barva ikony" for the idle microphone icon.
 /// Tuple is (id stored in settings, Czech label, sRGB red, green, blue).
 pub const ICON_COLORS: &[(&str, &str, f64, f64, f64)] = &[
-    ("coral", "Korálová", 1.0, 0.604, 0.635),
-    ("peach", "Broskvová", 1.0, 0.718, 0.698),
-    ("yellow", "Žlutá", 0.992, 0.894, 0.651),
-    ("mint", "Mátová", 0.710, 0.918, 0.843),
-    ("sky", "Nebeská", 0.635, 0.824, 1.0),
-    ("lavender", "Levandulová", 0.780, 0.698, 0.871),
-    ("pink", "Růžová", 1.0, 0.718, 0.871),
+    ("red", "Červená", 0.90, 0.16, 0.16),
+    ("orange", "Oranžová", 1.0, 0.55, 0.0),
+    ("yellow", "Žlutá", 1.0, 0.80, 0.0),
+    ("green", "Zelená", 0.18, 0.65, 0.27),
+    ("blue", "Modrá", 0.10, 0.50, 0.95),
+    ("purple", "Fialová", 0.58, 0.16, 0.75),
+    ("pink", "Růžová", 0.95, 0.13, 0.50),
 ];
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::application::ApplicationHandler;
