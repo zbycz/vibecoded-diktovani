@@ -282,12 +282,18 @@ mod macos {
                     let _: () = msg_send![self.progress_bar, setHidden: YES];
                 }
 
-                // Button: a neutral "Skrýt dialog" while downloading (the download
-                // keeps running in the background), a red "Zrušit" otherwise.
-                let (btitle, bezel): (&str, id) = if downloading {
-                    ("Skrýt dialog", nil)
-                } else {
-                    ("Zrušit", msg_send![class!(NSColor), systemRedColor])
+                // Button: neutral "Skrýt dialog" while downloading; otherwise
+                // a red button whose label matches the active operation.
+                let (btitle, bezel): (&str, id) = match &state {
+                    BubbleState::DownloadingModel { .. } => ("Skrýt dialog", nil),
+                    BubbleState::Recording => (
+                        "Zrušit nahrávku",
+                        msg_send![class!(NSColor), systemRedColor],
+                    ),
+                    BubbleState::Transcribing { .. } => (
+                        "Zrušit přepis",
+                        msg_send![class!(NSColor), systemRedColor],
+                    ),
                 };
                 let bt = NSString::alloc(nil).init_str(btitle);
                 let _: () = msg_send![self.button, setTitle: bt];
