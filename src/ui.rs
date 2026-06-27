@@ -188,7 +188,6 @@ impl WhisperingMvpApp {
         menu.append(&quit_item)?;
 
         let tray_icon = TrayIconBuilder::new()
-            .with_tooltip(self.tooltip())
             .with_icon(icon_for_state(TrayVisualState::Idle))
             .with_menu(Box::new(menu.clone()))
             .with_icon_as_template(true)
@@ -294,18 +293,11 @@ impl WhisperingMvpApp {
         self.set_status(format!("Jazyk přepisu: {label}"));
     }
 
-    fn tooltip(&self) -> String {
-        format!("Diktovani\n{}", self.status)
-    }
-
     fn refresh_tray(&mut self, state: TrayVisualState) {
         let Some(tray_icon) = self.tray_icon.as_ref() else {
             return;
         };
 
-        if let Err(err) = tray_icon.set_tooltip(Some(self.tooltip())) {
-            eprintln!("[tray] failed to update tooltip: {err}");
-        }
         self.apply_status_item_title(&status_menu_text(&self.status));
         if let Some(copy_last_transcript_item) = self.copy_last_transcript_item.as_ref() {
             copy_last_transcript_item
