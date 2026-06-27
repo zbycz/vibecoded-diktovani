@@ -89,6 +89,7 @@ pub struct DiktovaniApp {
     /// Kept so we can reach the native NSMenu (e.g. to style the Status item).
     menu: Option<Menu>,
     copy_last_transcript_item: Option<MenuItem>,
+    cancel_item: Option<MenuItem>,
     hide_bubble_item: Option<CheckMenuItem>,
     launch_at_login_item: Option<CheckMenuItem>,
     status_item: Option<MenuItem>,
@@ -140,6 +141,7 @@ impl DiktovaniApp {
             icon_color_items: Vec::new(),
             language_items: Vec::new(),
             copy_last_transcript_item: None,
+            cancel_item: None,
             hide_bubble_item: None,
             launch_at_login_item: None,
             status_item: None,
@@ -182,12 +184,15 @@ impl DiktovaniApp {
         // Enabled so clicking it opens the log; it's re-styled to look faded via
         // a gray attributed title (see `apply_status_item_title`).
         let status_item = MenuItem::new(status_menu_text(&self.status), true, None);
+        let (cancel_text, cancel_enabled) = self.cancel_menu_state();
+        let cancel_item = MenuItem::new(cancel_text, cancel_enabled, None);
         let quit_item = MenuItem::new("Quit", true, None);
 
         let (icon_color_menu, icon_color_items) = self.build_icon_color_menu()?;
         let (language_menu, language_items) = self.build_language_menu()?;
 
         menu.append(&status_item)?;
+        menu.append(&cancel_item)?;
         menu.append(&copy_last_transcript_item)?;
         menu.append(&language_menu)?;
         menu.append(&icon_color_menu)?;
@@ -207,6 +212,7 @@ impl DiktovaniApp {
         self.tray_icon = Some(tray_icon);
         self.menu = Some(menu);
         self.copy_last_transcript_item = Some(copy_last_transcript_item);
+        self.cancel_item = Some(cancel_item);
         self.hide_bubble_item = Some(hide_bubble_item);
         self.launch_at_login_item = Some(launch_at_login_item);
         self.status_item = Some(status_item);
@@ -314,6 +320,11 @@ impl DiktovaniApp {
                 .set_text(copy_last_transcript_menu_text(&self.last_transcript));
             copy_last_transcript_item.set_enabled(!self.last_transcript.trim().is_empty());
         }
+        if let Some(cancel_item) = self.cancel_item.as_ref() {
+            let (text, enabled) = self.cancel_menu_state();
+            cancel_item.set_text(text);
+            cancel_item.set_enabled(enabled);
+        }
         if apply_macos_symbol(tray_icon, state, self.idle_color()) {
             return;
         }
@@ -332,6 +343,18 @@ impl DiktovaniApp {
             TrayVisualState::Recording
         } else {
             TrayVisualState::Idle
+        }
+    }
+
+    /// Label and enabled state for the "Zrušit…" menu item: it names the active
+    /// operation and is greyed out when there is nothing to cancel.
+    fn cancel_menu_state(&self) -> (&'static str, bool) {
+        if self.recorder.is_recording() {
+            ("Zrušit nahrávku", true)
+        } else if self.is_transcribing {
+            ("Zrušit přepis", true)
+        } else {
+            ("Zrušit nahrávku", false)
         }
     }
 
@@ -756,6 +779,14 @@ impl ApplicationHandler<UserEvent> for DiktovaniApp {
                 {
                     let code = code.clone();
                     self.select_language(code);
+                    return;
+                }
+                if self
+                    .cancel_item
+                    .as_ref()
+                    .is_some_and(|item| event.id == *item.id())
+                {
+                    self.cancel_current();
                     return;
                 }
                 if self
