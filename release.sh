@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
-BIN_NAME="whispering-mvp"
+BIN_NAME="diktovani"
 APP_NAME="Diktovani"
 VERSION="${APP_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)}"
 APP_IDENTIFIER="${APP_IDENTIFIER:-com.example.diktovani}"

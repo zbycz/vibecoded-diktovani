@@ -52,7 +52,7 @@ pub fn run() -> UiResult<()> {
         let _ = menu_proxy.send_event(UserEvent::MenuEvent(event));
     }));
 
-    let mut app = WhisperingMvpApp::new(event_loop.create_proxy());
+    let mut app = DiktovaniApp::new(event_loop.create_proxy());
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -83,7 +83,7 @@ enum TrayVisualState {
     Transcribing { progress: u8, submit: bool }, // progress 0–100, submit = auto-send with Enter
 }
 
-pub struct WhisperingMvpApp {
+pub struct DiktovaniApp {
     proxy: EventLoopProxy<UserEvent>,
     tray_icon: Option<TrayIcon>,
     /// Kept so we can reach the native NSMenu (e.g. to style the Status item).
@@ -121,7 +121,7 @@ pub struct WhisperingMvpApp {
     settings: Settings,
 }
 
-impl WhisperingMvpApp {
+impl DiktovaniApp {
     fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
         let has_accessibility = has_accessibility_permission();
         let status = if has_accessibility {
@@ -639,7 +639,7 @@ impl WhisperingMvpApp {
     }
 }
 
-impl ApplicationHandler<UserEvent> for WhisperingMvpApp {
+impl ApplicationHandler<UserEvent> for DiktovaniApp {
     fn resumed(&mut self, _event_loop: &ActiveEventLoop) {}
 
     fn window_event(

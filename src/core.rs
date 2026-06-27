@@ -248,7 +248,7 @@ impl RecorderState {
         self.close_session()?;
 
         let file_path = std::env::temp_dir().join(format!(
-            "whispering-mvp-{}.wav",
+            "diktovani-{}.wav",
             std::time::UNIX_EPOCH
                 .elapsed()
                 .map_err(|e| AppError::Message(format!("Failed to create temp filename: {e}")))?
