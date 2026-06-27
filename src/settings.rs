@@ -12,6 +12,8 @@ pub struct Settings {
     pub icon_color: String,
     /// Whisper transcription language code (e.g. "cs", "en").
     pub language: String,
+    /// When true, the popup bubble under the menu-bar icon is never shown.
+    pub hide_bubble: bool,
 }
 
 impl Default for Settings {
@@ -19,6 +21,7 @@ impl Default for Settings {
         Self {
             icon_color: String::new(),
             language: crate::core::LANGUAGE.to_string(),
+            hide_bubble: false,
         }
     }
 }
@@ -49,6 +52,7 @@ impl Settings {
             match key.trim() {
                 "icon_color" => settings.icon_color = value.trim().to_string(),
                 "language" => settings.language = value.trim().to_string(),
+                "hide_bubble" => settings.hide_bubble = value.trim() == "true",
                 _ => {}
             }
         }
@@ -62,7 +66,10 @@ impl Settings {
         if let Some(dir) = path.parent() {
             let _ = fs::create_dir_all(dir);
         }
-        let content = format!("icon_color={}\nlanguage={}\n", self.icon_color, self.language);
+        let content = format!(
+            "icon_color={}\nlanguage={}\nhide_bubble={}\n",
+            self.icon_color, self.language, self.hide_bubble
+        );
         if let Err(err) = fs::write(&path, content) {
             eprintln!("[settings] failed to save {}: {err}", path.display());
         }

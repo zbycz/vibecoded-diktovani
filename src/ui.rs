@@ -89,6 +89,7 @@ pub struct DiktovaniApp {
     /// Kept so we can reach the native NSMenu (e.g. to style the Status item).
     menu: Option<Menu>,
     copy_last_transcript_item: Option<MenuItem>,
+    hide_bubble_item: Option<CheckMenuItem>,
     launch_at_login_item: Option<CheckMenuItem>,
     status_item: Option<MenuItem>,
     /// Idle-icon color picker items, paired with the color id they select
@@ -139,6 +140,7 @@ impl DiktovaniApp {
             icon_color_items: Vec::new(),
             language_items: Vec::new(),
             copy_last_transcript_item: None,
+            hide_bubble_item: None,
             launch_at_login_item: None,
             status_item: None,
             quit_item: None,
@@ -165,6 +167,12 @@ impl DiktovaniApp {
             !self.last_transcript.trim().is_empty(),
             None,
         );
+        let hide_bubble_item = CheckMenuItem::new(
+            "Nezobrazovat popup (bublinu)",
+            true,
+            self.settings.hide_bubble,
+            None,
+        );
         let launch_at_login_item = CheckMenuItem::new(
             "Spouštět po startu systému",
             true,
@@ -184,6 +192,7 @@ impl DiktovaniApp {
         menu.append(&language_menu)?;
         menu.append(&icon_color_menu)?;
         menu.append(&PredefinedMenuItem::separator())?;
+        menu.append(&hide_bubble_item)?;
         menu.append(&launch_at_login_item)?;
         menu.append(&quit_item)?;
 
@@ -198,6 +207,7 @@ impl DiktovaniApp {
         self.tray_icon = Some(tray_icon);
         self.menu = Some(menu);
         self.copy_last_transcript_item = Some(copy_last_transcript_item);
+        self.hide_bubble_item = Some(hide_bubble_item);
         self.launch_at_login_item = Some(launch_at_login_item);
         self.status_item = Some(status_item);
         self.icon_color_items = icon_color_items;
@@ -391,6 +401,9 @@ impl DiktovaniApp {
     }
 
     fn show_bubble(&mut self, state: BubbleState) {
+        if self.settings.hide_bubble {
+            return;
+        }
         let anchor = self.status_item_screen_rect();
         if let Some(bubble) = self.bubble.as_ref() {
             match anchor {
@@ -401,6 +414,9 @@ impl DiktovaniApp {
     }
 
     fn update_bubble(&mut self, state: BubbleState) {
+        if self.settings.hide_bubble {
+            return;
+        }
         if let Some(bubble) = self.bubble.as_ref() {
             bubble.update(state);
         }
@@ -753,6 +769,29 @@ impl ApplicationHandler<UserEvent> for DiktovaniApp {
                             self.set_status(format!("Failed to copy last transcript: {err}"))
                         }
                     }
+                    return;
+                }
+                if self
+                    .hide_bubble_item
+                    .as_ref()
+                    .is_some_and(|item| event.id == *item.id())
+                {
+                    let hidden = self
+                        .hide_bubble_item
+                        .as_ref()
+                        .map(|item| item.is_checked())
+                        .unwrap_or(false);
+                    self.settings.hide_bubble = hidden;
+                    self.settings.save();
+                    // Take down any bubble already on screen when turning it off.
+                    if hidden {
+                        self.hide_bubble();
+                    }
+                    self.set_status(if hidden {
+                        "Popup (bublina) se nebude zobrazovat."
+                    } else {
+                        "Popup (bublina) se bude zobrazovat."
+                    });
                     return;
                 }
                 if self
