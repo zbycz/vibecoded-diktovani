@@ -676,6 +676,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 
 [[package]]
+name = "diktovani"
+version = "0.1.0"
+dependencies = [
+ "accessibility-sys",
+ "arboard",
+ "block",
+ "cocoa",
+ "core-foundation 0.10.1",
+ "core-foundation-sys",
+ "cpal",
+ "enigo",
+ "env_logger",
+ "hound",
+ "image",
+ "libc",
+ "objc",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "rubato",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tray-icon",
+ "ureq",
+ "whisper-rs",
+ "winit",
+]
+
+[[package]]
 name = "dirs"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3608,35 +3637,6 @@ dependencies = [
  "cfg-if",
  "cmake",
  "fs_extra",
-]
-
-[[package]]
-name = "whispering-mvp"
-version = "0.1.0"
-dependencies = [
- "accessibility-sys",
- "arboard",
- "block",
- "cocoa",
- "core-foundation 0.10.1",
- "core-foundation-sys",
- "cpal",
- "enigo",
- "env_logger",
- "hound",
- "image",
- "libc",
- "objc",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "rubato",
- "tempfile",
- "thiserror 2.0.18",
- "tray-icon",
- "ureq",
- "whisper-rs",
- "winit",
 ]
 
 [[package]]
