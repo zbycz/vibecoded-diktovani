@@ -938,26 +938,49 @@ pub fn transcribe_wav_file(
         model_path.display()
     );
 
-    // whisper's native progress callback only fires once per 30-second chunk –
-    // short recordings always give just 0% and 100%.  Instead, run a timer
-    // thread that fires every 200 ms with a time-based estimate, and skip the
-    // whisper callback entirely.
+    // Drive the bar from whisper's *measured* decode progress instead of a
+    // predicted duration. whisper.cpp reports the fraction of audio processed
+    // (0–100) as it goes, which reflects the machine's actual current speed, so
+    // the bar stays accurate regardless of battery, thermal throttling or system
+    // load — the failure mode of a fixed time estimate, which runs to a fraction
+    // and then snaps to 100% whenever the run is faster than predicted.
+    //
+    // A single ticker owns every call to the UI callback (one writer, no
+    // races): it follows the measured progress once whisper starts reporting,
+    // and before the first report it creeps forward on a time estimate so the
+    // bar isn't stuck at 0. Values are monotonic and capped below 100 until the
+    // transcript is actually ready.
+    let native_progress = Arc::new(std::sync::atomic::AtomicU8::new(0));
     let progress_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let ticker_handle: Option<thread::JoinHandle<()>> = progress_callback.map(|cb| {
         let cb = cb.clone();
         let done = progress_done.clone();
+        let native = native_progress.clone();
         let audio_secs = samples.len() as f32 / 16000.0;
         let estimated_secs = estimate_transcription_secs(audio_secs);
         thread::spawn(move || {
             let started = Instant::now();
+            let mut shown: f32 = 0.0;
             loop {
-                thread::sleep(Duration::from_millis(200));
+                thread::sleep(Duration::from_millis(120));
                 if done.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
-                let elapsed = started.elapsed().as_secs_f32();
-                let pct = ((elapsed / estimated_secs) * 100.0).clamp(0.0, 75.0) as u8;
-                println!("[{:.1}s] [transcribe] progress ~{}%", ts(), pct);
+                let measured = native.load(std::sync::atomic::Ordering::Relaxed) as f32;
+                let target = if measured > 0.0 {
+                    // Real progress from whisper: trust it.
+                    measured
+                } else {
+                    // Not reporting yet: creep up on the estimate, leaving
+                    // headroom so we never overshoot before real data arrives.
+                    let elapsed = started.elapsed().as_secs_f32();
+                    (elapsed / estimated_secs * 100.0).min(90.0)
+                };
+                // Monotonic: never let the bar jump backwards.
+                if target > shown {
+                    shown = target;
+                }
+                let pct = shown.clamp(0.0, 99.0) as u8;
                 cb(pct);
             }
         })
@@ -972,8 +995,15 @@ pub fn transcribe_wav_file(
     let Engine::Whisper(whisper_model) = engine;
 
     let inference_started_at = Instant::now();
+    // Feed whisper's per-step progress into the shared atomic the ticker reads.
+    let on_progress: Option<Box<dyn FnMut(u8) + 'static>> = progress_callback.map(|_| {
+        let native = native_progress.clone();
+        Box::new(move |p: u8| {
+            native.store(p, std::sync::atomic::Ordering::Relaxed);
+        }) as Box<dyn FnMut(u8) + 'static>
+    });
     let raw = whisper_model
-        .transcribe(&samples, Some(language), None)
+        .transcribe(&samples, Some(language), on_progress)
         .map_err(|e| AppError::Message(format!("Transcription failed: {e}")))?;
     let transcript = strip_trailing_subtitle_credit(raw.trim());
 
@@ -1109,14 +1139,15 @@ pub fn append_transcription_log(
     }
 }
 
-/// Estimate how long inference will take for `audio_secs` of audio, used to
-/// drive the progress bar. Linear model `base + rtf * audio`.
+/// Estimate how long inference will take for `audio_secs` of audio. Linear
+/// model `base + rtf * audio`.
 ///
-/// The coefficients are derived from the user's own `timings.csv` so the
-/// estimate adapts to their hardware: a faster machine produces smaller
-/// recorded times, which lower the computed rtf, which shortens future
-/// estimates. We recompute on every call (the file is tiny). Until enough real
-/// samples accumulate we fall back to the static reference formula.
+/// This is only a fallback: the progress bar follows whisper's measured decode
+/// progress, and this estimate merely lets the bar creep forward in the brief
+/// window before whisper reports its first update. The coefficients are derived
+/// from the user's own `timings.csv` so the estimate adapts to their hardware.
+/// We recompute on every call (the file is tiny). Until enough real samples
+/// accumulate we fall back to the static reference formula.
 fn estimate_transcription_secs(audio_secs: f32) -> f32 {
     let rows = read_timings();
     let (base, rtf) = match estimate_coefficients(&rows) {
@@ -1132,10 +1163,10 @@ const ESTIMATE_MIN_SAMPLES: usize = 5;
 /// Clips shorter than this are treated as "fixed overhead" samples; longer
 /// clips are used to measure the marginal real-time factor.
 const ESTIMATE_SHORT_CLIP_SECS: f32 = 8.0;
-/// Percentile used for the marginal real-time factor. Slightly conservative so
-/// the bar reaches its cap roughly when inference finishes, rather than
-/// stalling there early.
-const ESTIMATE_PERCENTILE: f32 = 0.90;
+/// Percentile used for the marginal real-time factor. The median is the typical
+/// run; the estimate only drives the pre-report creep now, so it should reflect
+/// a normal run rather than the worst case.
+const ESTIMATE_PERCENTILE: f32 = 0.50;
 
 /// Derive `(base_secs, rtf)` from recorded `(audio_secs, transcription_secs)`
 /// samples, or `None` when there are too few to be meaningful.

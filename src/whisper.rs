@@ -18,8 +18,8 @@ impl WhisperModel {
 
     /// Transcribe audio samples (16 kHz, mono, f32).
     ///
-    /// `on_progress` receives values 0–100 as each segment is decoded.
-    /// Progress is estimated from segment end timestamps vs total audio length.
+    /// `on_progress` receives values 0–100 reporting the fraction of audio
+    /// whisper has decoded so far, emitted as decoding advances.
     pub fn transcribe(
         &self,
         samples: &[f32],
