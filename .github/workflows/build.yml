@@ -1,0 +1,42 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - "**"
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Stamp dev version
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          sed -i '' "s/^version = \"\(.*\)\"/version = \"\1-dev-${SHORT_SHA}\"/" Cargo.toml
+
+      - name: Build application bundle
+        run: ./release.sh
+
+      - name: Package application bundle
+        run: |
+          VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          ARCHIVE="Diktovani-${VERSION}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "Diktovani.app" "$ARCHIVE"
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Upload artifact - see Summary for download
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE }}
+          path: ${{ env.ARCHIVE }}
+          retention-days: 14
