@@ -1,0 +1,44 @@
+name: Release
+
+# Runs whenever a version tag is pushed (a "release"), e.g. v0.1.0 or 1.2.3.
+on:
+  push:
+    tags:
+      - "v*"
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # The app is a macOS bundle (Diktovani.app), so it must be built on macOS.
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build application bundle
+        run: ./release.sh
+
+      - name: Package application bundle
+        id: package
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARCHIVE="Diktovani-${VERSION}-macos.zip"
+          # -y preserves symlinks inside the .app bundle.
+          ditto -c -k --sequesterRsrc --keepParent "Diktovani.app" "$ARCHIVE"
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release and upload artifact
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.package.outputs.archive }}
+          generate_release_notes: true
