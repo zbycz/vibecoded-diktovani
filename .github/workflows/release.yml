@@ -74,9 +74,13 @@ jobs:
           {
             git log --no-merges --pretty=format:'- %s' "$RANGE"
             echo ""
-            echo "."
+            echo " "
             echo ""
             echo "The Diktovani.app file is not signed. To run a file downloaded from internet, run \`xattr -rd com.apple.quarantine Diktovani.app\`."
+            echo ""
+            if [ -n "$PREV" ]; then
+              echo "**Full Changelog**: https://github.com/zbycz/vibecoded-diktovani/compare/${PREV}...${CURRENT}"
+            fi
           } > RELEASE_NOTES.md
 
       - name: Create GitHub release and upload artifact
