@@ -1527,7 +1527,7 @@ fn launch_agent_plist_contents(executable: &PathBuf) -> String {
         <string>{executable}</string>
     </array>
     <key>RunAtLoad</key>
-    <true/>
+    <false/>
     <key>KeepAlive</key>
     <false/>
 </dict>
