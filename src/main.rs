@@ -10,6 +10,17 @@ mod whisper;
 use std::fs::OpenOptions;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("--check-accessibility") {
+        #[cfg(target_os = "macos")]
+        // SAFETY: standard AX API call with no invariants to uphold
+        unsafe {
+            print!("{}", accessibility_sys::AXIsProcessTrusted());
+        }
+        #[cfg(not(target_os = "macos"))]
+        print!("true");
+        return Ok(());
+    }
+
     redirect_output_to_log();
     whisper_rs::install_whisper_log_trampoline();
     ui::run()

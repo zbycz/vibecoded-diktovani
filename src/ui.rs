@@ -2,7 +2,8 @@ use crate::core::{
     LOG_PATH, ModelDownloadCallback, ModelDownloadProgress, ModelManager, ProgressCallback,
     RecorderState, StatusCallback, copy_and_paste_text, copy_text_to_clipboard, ensure_model_cached,
     has_accessibility_permission, is_launch_at_login_enabled,
-    request_accessibility_permission_if_needed, set_launch_at_login, transcribe_wav_file,
+    request_accessibility_permission_if_needed, restart_app, set_launch_at_login,
+    transcribe_wav_file, watch_tcc_for_accessibility_change,
 };
 use crate::bubble::{Bubble, BubbleState};
 use crate::hotkey::{FnTap, HotkeyMonitor, install_fn_tap_monitor};
@@ -65,6 +66,7 @@ enum UserEvent {
     FnTap(FnTap),
     Cancel,
     WorkerEvent(WorkerEvent),
+    TccChanged,
 }
 
 enum WorkerEvent {
@@ -136,6 +138,13 @@ impl DiktovaniApp {
             "Ready. Left click to dictate. Enable Accessibility for Diktovani to turn on auto-paste and the Fn/Globe hotkey."
                 .to_string()
         };
+
+        if !has_accessibility {
+            let tcc_proxy = proxy.clone();
+            watch_tcc_for_accessibility_change(move || {
+                let _ = tcc_proxy.send_event(UserEvent::TccChanged);
+            });
+        }
 
         Self {
             proxy,
@@ -682,20 +691,8 @@ impl DiktovaniApp {
     }
 
     fn refresh_accessibility_hotkey(&mut self) {
-        if !self.waiting_for_accessibility_hotkey || self.hotkey_monitor.is_some() {
-            return;
-        }
-
-        if !has_accessibility_permission() {
-            return;
-        }
-
-        self.install_hotkey_monitor();
-        if self.hotkey_monitor.is_some() && !self.recorder.is_recording() && !self.is_transcribing {
-            self.set_status(
-                "Accessibility granted. Left click the microphone or double-press Fn/Globe to dictate.",
-            );
-        }
+        // Detection is handled by watch_tcc_for_accessibility_change (kqueue on TCC db).
+        // AXIsProcessTrusted() caches "denied" after the prompt dialog, so polling it is useless.
     }
 }
 
@@ -767,6 +764,10 @@ impl ApplicationHandler<UserEvent> for DiktovaniApp {
         self.model_manager.unload_if_idle();
 
         match event {
+            UserEvent::TccChanged => {
+                eprintln!("[accessibility] TccChanged event received — restarting");
+                restart_app();
+            }
             UserEvent::FnTap(tap) => self.handle_fn_tap(tap),
             UserEvent::Cancel => self.cancel_current(),
             UserEvent::TrayIconEvent(TrayIconEvent::Click {

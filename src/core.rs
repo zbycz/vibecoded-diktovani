@@ -722,6 +722,47 @@ fn prompt_accessibility_permission() {
 #[cfg(not(target_os = "macos"))]
 fn prompt_accessibility_permission() {}
 
+pub fn restart_app() {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::process::Command::new(exe).spawn();
+    }
+    std::process::exit(0);
+}
+
+/// Polls accessibility trust from a fresh subprocess every second.
+/// AXIsProcessTrusted() caches "denied" in the running process after the prompt
+/// dialog is shown, so we must check via a subprocess that hasn't been tainted.
+pub fn watch_tcc_for_accessibility_change(on_change: impl Fn() + Send + 'static) {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[accessibility] cannot get exe path: {e}");
+            return;
+        }
+    };
+
+    std::thread::spawn(move || {
+        eprintln!("[accessibility] starting subprocess poll for permission change");
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+
+            let trusted = std::process::Command::new(&exe)
+                .arg("--check-accessibility")
+                .output()
+                .map(|o| o.stdout.starts_with(b"true"))
+                .unwrap_or(false);
+
+            eprintln!("[accessibility] subprocess check: trusted={trusted}");
+
+            if trusted {
+                eprintln!("[accessibility] permission granted — notifying main thread");
+                on_change();
+                return;
+            }
+        }
+    });
+}
+
 pub fn copy_and_paste_text(text: &str, submit_with_enter: bool) -> Result<()> {
     if text.trim().is_empty() {
         return Ok(());
