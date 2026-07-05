@@ -938,18 +938,20 @@ pub fn transcribe_wav_file(
         model_path.display()
     );
 
-    // Drive the bar from whisper's *measured* decode progress instead of a
-    // predicted duration. whisper.cpp reports the fraction of audio processed
-    // (0–100) as it goes, which reflects the machine's actual current speed, so
-    // the bar stays accurate regardless of battery, thermal throttling or system
-    // load — the failure mode of a fixed time estimate, which runs to a fraction
-    // and then snaps to 100% whenever the run is faster than predicted.
+    // Drive the bar from whisper's *measured* decode progress, interpolated with
+    // the CSV time estimate. whisper.cpp only calls its progress callback at the
+    // start of each ~30-second chunk (`progress = 100*(seek-start)/(end-start)`,
+    // once per outer loop), so it reports in coarse jumps — 0/33/66 for a 90 s
+    // clip, and nothing at all for a clip under 30 s. Snapping straight to those
+    // anchors would leave the bar frozen for ~30 s at a time.
     //
-    // A single ticker owns every call to the UI callback (one writer, no
-    // races): it follows the measured progress once whisper starts reporting,
-    // and before the first report it creeps forward on a time estimate so the
-    // bar isn't stuck at 0. Values are monotonic and capped below 100 until the
-    // transcript is actually ready.
+    // So we anchor on each real report (it reflects the machine's actual current
+    // speed, robust to battery/thermal/load) and, between reports, advance at the
+    // estimated rate to fill the gap — capped ~one chunk past the last confirmed
+    // anchor so a slower-than-estimated run waits for reality instead of running
+    // away. Before the first report we creep on the estimate alone. A single
+    // ticker owns every UI callback (one writer); values stay monotonic and below
+    // 100 until the transcript is ready.
     let native_progress = Arc::new(std::sync::atomic::AtomicU8::new(0));
     let progress_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let ticker_handle: Option<thread::JoinHandle<()>> = progress_callback.map(|cb| {
@@ -958,30 +960,40 @@ pub fn transcribe_wav_file(
         let native = native_progress.clone();
         let audio_secs = samples.len() as f32 / 16000.0;
         let estimated_secs = estimate_transcription_secs(audio_secs);
+        // Estimated fill rate (percent per second) and how far past the last
+        // confirmed report the estimate may run before waiting. One whisper
+        // report lands roughly per 30 s of audio, so cap the lead near one such
+        // chunk's worth of progress (clamped for very short/long clips).
+        let rate = 100.0 / estimated_secs;
+        let lead_cap = (100.0 * 30.0 / audio_secs).clamp(20.0, 100.0);
         thread::spawn(move || {
-            let started = Instant::now();
             let mut shown: f32 = 0.0;
+            let mut anchor_pct: f32 = 0.0;
+            let mut anchor_at = Instant::now();
             loop {
                 thread::sleep(Duration::from_millis(120));
                 if done.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
                 let measured = native.load(std::sync::atomic::Ordering::Relaxed) as f32;
-                let target = if measured > 0.0 {
-                    // Real progress from whisper: trust it.
-                    measured
+                // A newer real report resets the interpolation anchor.
+                if measured > anchor_pct {
+                    anchor_pct = measured;
+                    anchor_at = Instant::now();
+                }
+                let projected = anchor_pct + rate * anchor_at.elapsed().as_secs_f32();
+                let ceiling = if measured > 0.0 {
+                    (anchor_pct + lead_cap).min(99.0)
                 } else {
-                    // Not reporting yet: creep up on the estimate, leaving
-                    // headroom so we never overshoot before real data arrives.
-                    let elapsed = started.elapsed().as_secs_f32();
-                    (elapsed / estimated_secs * 100.0).min(90.0)
+                    // No real data yet: creep but leave clear headroom.
+                    90.0
                 };
+                let target = projected.min(ceiling).max(measured);
                 // Monotonic: never let the bar jump backwards.
                 if target > shown {
                     shown = target;
                 }
-                let pct = shown.clamp(0.0, 99.0) as u8;
-                cb(pct);
+                cb(shown.clamp(0.0, 99.0) as u8);
             }
         })
     });
