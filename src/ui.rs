@@ -41,6 +41,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 
 type UiResult<T> = Result<T, Box<dyn std::error::Error>>;
 
+const REPO_URL: &str = "https://github.com/zbycz/vibecoded-diktovani";
+
 pub fn run() -> UiResult<()> {
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     let tray_proxy = event_loop.create_proxy();
@@ -93,6 +95,7 @@ pub struct DiktovaniApp {
     hide_bubble_item: Option<CheckMenuItem>,
     launch_at_login_item: Option<CheckMenuItem>,
     status_item: Option<MenuItem>,
+    app_info_item: Option<MenuItem>,
     /// Idle-icon color picker items, paired with the color id they select
     /// (empty id = default monochrome).
     icon_color_items: Vec<(String, CheckMenuItem)>,
@@ -145,6 +148,7 @@ impl DiktovaniApp {
             hide_bubble_item: None,
             launch_at_login_item: None,
             status_item: None,
+            app_info_item: None,
             quit_item: None,
             hotkey_monitor: None,
             waiting_for_accessibility_hotkey: !has_accessibility,
@@ -181,12 +185,11 @@ impl DiktovaniApp {
             is_launch_at_login_enabled(),
             None,
         );
-        // Enabled so clicking it opens the log; it's re-styled to look faded via
-        // a gray attributed title (see `apply_status_item_title`).
         let status_item = MenuItem::new(status_menu_text(&self.status), true, None);
         let (cancel_text, cancel_enabled) = self.cancel_menu_state();
         let cancel_item = MenuItem::new(cancel_text, cancel_enabled, None);
         let quit_item = MenuItem::new("Quit", true, None);
+        let app_info_item = MenuItem::new(footer_menu_text(), true, None);
 
         let (icon_color_menu, icon_color_items) = self.build_icon_color_menu()?;
         let (language_menu, language_items) = self.build_language_menu()?;
@@ -194,11 +197,13 @@ impl DiktovaniApp {
         menu.append(&status_item)?;
         menu.append(&cancel_item)?;
         menu.append(&copy_last_transcript_item)?;
+        menu.append(&app_info_item)?;
+        menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&language_menu)?;
         menu.append(&icon_color_menu)?;
-        menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&hide_bubble_item)?;
         menu.append(&launch_at_login_item)?;
+        menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&quit_item)?;
 
         let tray_icon = TrayIconBuilder::new()
@@ -219,6 +224,8 @@ impl DiktovaniApp {
         self.icon_color_items = icon_color_items;
         self.language_items = language_items;
         self.quit_item = Some(quit_item);
+        self.app_info_item = Some(app_info_item);
+        self.apply_gray_title(3, &footer_menu_text(), self.app_info_item.as_ref());
         Ok(())
     }
 
@@ -483,31 +490,39 @@ impl DiktovaniApp {
     /// Set the Status item's title. On macOS we draw it with a gray attributed
     /// title so it keeps the "faded" look of a disabled item while still being
     /// clickable (clicking it opens the log).
+    fn apply_status_item_title(&self, text: &str) {
+        // The Status item is appended first, so it lives at index 0.
+        self.apply_gray_title(0, text, self.status_item.as_ref());
+    }
+
+    /// Draw the menu item at `index` with a gray attributed title on macOS, so
+    /// it keeps the "faded" look of a disabled item while still being
+    /// clickable. `fallback` is used to set plain text when the native title
+    /// can't be styled (e.g. on other platforms).
     #[cfg(target_os = "macos")]
     #[allow(deprecated)]
-    fn apply_status_item_title(&self, text: &str) {
+    fn apply_gray_title(&self, index: isize, text: &str, fallback: Option<&MenuItem>) {
         use cocoa::base::{id, nil};
         use cocoa::foundation::NSString;
         use objc::{class, msg_send, sel, sel_impl};
 
-        let fallback = || {
-            if let Some(item) = self.status_item.as_ref() {
+        let set_fallback = || {
+            if let Some(item) = fallback {
                 item.set_text(text);
             }
         };
 
         let Some(menu) = self.menu.as_ref() else {
-            return fallback();
+            return set_fallback();
         };
         let ns_menu = ContextMenu::ns_menu(menu) as id;
         if ns_menu.is_null() {
-            return fallback();
+            return set_fallback();
         }
         unsafe {
-            // The Status item is appended first, so it lives at index 0.
-            let item: id = msg_send![ns_menu, itemAtIndex: 0isize];
+            let item: id = msg_send![ns_menu, itemAtIndex: index];
             if item.is_null() {
-                return fallback();
+                return set_fallback();
             }
             let s = NSString::alloc(nil).init_str(text);
             let color: id = msg_send![class!(NSColor), disabledControlTextColor];
@@ -522,8 +537,8 @@ impl DiktovaniApp {
     }
 
     #[cfg(not(target_os = "macos"))]
-    fn apply_status_item_title(&self, text: &str) {
-        if let Some(item) = self.status_item.as_ref() {
+    fn apply_gray_title(&self, _index: isize, text: &str, fallback: Option<&MenuItem>) {
+        if let Some(item) = fallback {
             item.set_text(text);
         }
     }
@@ -531,6 +546,12 @@ impl DiktovaniApp {
     fn open_log(&mut self) {
         if let Err(err) = std::process::Command::new("open").arg(LOG_PATH).spawn() {
             self.set_status(format!("Nepodařilo se otevřít log: {err}"));
+        }
+    }
+
+    fn open_repo(&mut self) {
+        if let Err(err) = std::process::Command::new("open").arg(REPO_URL).spawn() {
+            self.set_status(format!("Nepodařilo se otevřít GitHub: {err}"));
         }
     }
 
@@ -853,6 +874,14 @@ impl ApplicationHandler<UserEvent> for DiktovaniApp {
                     return;
                 }
                 if self
+                    .app_info_item
+                    .as_ref()
+                    .is_some_and(|item| event.id == *item.id())
+                {
+                    self.open_repo();
+                    return;
+                }
+                if self
                     .quit_item
                     .as_ref()
                     .is_some_and(|item| event.id == *item.id())
@@ -952,6 +981,10 @@ fn preview_text(text: &str) -> String {
         preview.push_str("...");
     }
     format!("Last transcript: {preview}")
+}
+
+fn footer_menu_text() -> String {
+    format!("Diktovani v{}", env!("CARGO_PKG_VERSION"))
 }
 
 fn status_menu_text(status: &str) -> String {
