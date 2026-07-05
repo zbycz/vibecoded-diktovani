@@ -18,6 +18,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history so we can list commits since the previous tag.
+          fetch-depth: 0
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -37,8 +40,27 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "Diktovani.app" "$ARCHIVE"
           echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
 
+      - name: Generate release notes
+        run: |
+          CURRENT="${GITHUB_REF_NAME}"
+          # Previous tag reachable from this one, if any.
+          PREV="$(git describe --tags --abbrev=0 "${CURRENT}^" 2>/dev/null || true)"
+          {
+            if [ -n "$PREV" ]; then
+              RANGE="${PREV}..${CURRENT}"
+            else
+              RANGE="${CURRENT}"
+            fi
+            # One line per commit. GitHub auto-links any "#123" reference to the
+            # matching PR/issue; commits without one stay plain text.
+            git log --no-merges --pretty=format:'- %s' "$RANGE"
+            echo ""
+            echo ""
+            echo "The Diktovani.app file is not signed. To run a file downloaded from internet, run \`xattr -rd com.apple.quarantine Diktovani.app\`."
+          } > RELEASE_NOTES.md
+
       - name: Create GitHub release and upload artifact
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.package.outputs.archive }}
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
