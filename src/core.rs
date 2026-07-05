@@ -938,10 +938,12 @@ pub fn transcribe_wav_file(
         model_path.display()
     );
 
-    // whisper's native progress callback only fires once per 30-second chunk –
-    // short recordings always give just 0% and 100%.  Instead, run a timer
-    // thread that fires every 200 ms with a time-based estimate, and skip the
-    // whisper callback entirely.
+    // NOTE: we deliberately do NOT use whisper's native progress callback.
+    // whisper.cpp only fires it once per 30-second chunk (at each chunk
+    // boundary), so short recordings would jump straight from 0% to 100% and
+    // longer ones would freeze for ~30 s between updates. Instead we drive the
+    // bar ourselves from a time-based estimate: a timer thread fires every
+    // 200 ms and interpolates progress from the elapsed time vs the estimate.
     let progress_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let ticker_handle: Option<thread::JoinHandle<()>> = progress_callback.map(|cb| {
         let cb = cb.clone();
@@ -1132,10 +1134,11 @@ const ESTIMATE_MIN_SAMPLES: usize = 5;
 /// Clips shorter than this are treated as "fixed overhead" samples; longer
 /// clips are used to measure the marginal real-time factor.
 const ESTIMATE_SHORT_CLIP_SECS: f32 = 8.0;
-/// Percentile used for the marginal real-time factor. Slightly conservative so
-/// the bar reaches its cap roughly when inference finishes, rather than
-/// stalling there early.
-const ESTIMATE_PERCENTILE: f32 = 0.90;
+/// Percentile used for the marginal real-time factor. The median (0.50) is the
+/// typical run, so the estimate tracks a normal transcription instead of the
+/// pessimistic p90, which roughly doubled the estimate and left the bar
+/// finishing at a fraction before snapping to 100%.
+const ESTIMATE_PERCENTILE: f32 = 0.50;
 
 /// Derive `(base_secs, rtf)` from recorded `(audio_secs, transcription_secs)`
 /// samples, or `None` when there are too few to be meaningful.
