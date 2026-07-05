@@ -50,7 +50,7 @@ fn ts() -> f32 {
 pub const MODEL_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin";
 pub const MODEL_FILENAME: &str = "ggml-large-v3-turbo.bin";
-pub const APP_IDENTIFIER: &str = "com.example.diktovani";
+pub const APP_IDENTIFIER: &str = "cz.zby.diktovani";
 pub const LANGUAGE: &str = "cs";
 /// Where stdout/stderr are mirrored (see `main::redirect_output_to_log`); the
 /// Status menu item opens this file.
@@ -1544,6 +1544,27 @@ fn xml_escape(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+/// Removes a stale LaunchAgent plist left over from when the app used a
+/// different bundle identifier, so the old job doesn't run in parallel with
+/// the new one.
+#[cfg(target_os = "macos")]
+pub fn migrate_launch_agent_identifier(old_identifier: &str) {
+    let Ok(home) = std::env::var("HOME") else {
+        return;
+    };
+    let old_plist = PathBuf::from(home)
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{old_identifier}.plist"));
+    if old_plist.exists() {
+        let _ = Command::new("launchctl")
+            .args(["unload", "-w"])
+            .arg(&old_plist)
+            .status();
+        let _ = std::fs::remove_file(&old_plist);
+    }
 }
 
 fn extract_whisper_samples_from_wav(audio_data: Vec<u8>) -> Result<Vec<f32>> {
