@@ -13,13 +13,17 @@ outputs:
   identity:
     description: Codesign identity name found in the imported certificate, empty if signing was skipped
     value: ${{ steps.identity.outputs.identity }}
+  cert-path:
+    description: Path to the PEM-encoded public certificate (no private key), empty if signing was skipped
+    value: ${{ steps.import.outputs.cert-path }}
 runs:
   using: composite
   steps:
     - if: ${{ inputs.p12-base64 == '' }}
       shell: bash
       run: echo "::warning::MACOS_CERT_P12 secret not set — building unsigned. Accessibility permission will not persist across rebuilds."
-    - if: ${{ inputs.p12-base64 != '' }}
+    - id: import
+      if: ${{ inputs.p12-base64 != '' }}
       shell: bash
       env:
         KEYCHAIN: diktovani-signing.keychain-db
@@ -35,6 +39,13 @@ runs:
         echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
         security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
         rm -f "$RUNNER_TEMP/cert.p12"
+
+        # Public-only export (no private key) so users can trust this exact
+        # certificate on their own machine instead of unquarantining every
+        # single download.
+        CERT_PATH="$RUNNER_TEMP/diktovani-signing-cert.pem"
+        security find-certificate -a -p "$KEYCHAIN" > "$CERT_PATH"
+        echo "cert-path=$CERT_PATH" >> "$GITHUB_OUTPUT"
 
         security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
         security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
