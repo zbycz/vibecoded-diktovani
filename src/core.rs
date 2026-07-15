@@ -999,7 +999,7 @@ pub fn transcribe_wav_file(
                     break;
                 }
                 let elapsed = started.elapsed().as_secs_f32();
-                let pct = ((elapsed / estimated_secs) * 100.0).clamp(0.0, 75.0) as u8;
+                let pct = ((elapsed / estimated_secs) * 100.0).clamp(0.0, 85.0) as u8;
                 println!("[{:.1}s] [transcribe] progress ~{}%", ts(), pct);
                 cb(pct);
             }
@@ -1166,47 +1166,52 @@ fn estimate_transcription_secs(audio_secs: f32) -> f32 {
         Some(coeffs) => coeffs,
         None => (ESTIMATE_BASE_SECS, ESTIMATE_RTF),
     };
-    (base + rtf * audio_secs).max(0.5)
+    ((base + rtf * audio_secs) * ESTIMATE_OPTIMISM).max(0.5)
 }
 
 /// Number of valid samples required before we trust `timings.csv` over the
 /// static reference formula.
 const ESTIMATE_MIN_SAMPLES: usize = 5;
-/// Clips shorter than this are treated as "fixed overhead" samples; longer
-/// clips are used to measure the marginal real-time factor.
-const ESTIMATE_SHORT_CLIP_SECS: f32 = 8.0;
-/// Percentile used for the marginal real-time factor. The median (0.50) is the
-/// typical run, so the estimate tracks a normal transcription instead of the
-/// pessimistic p90, which roughly doubled the estimate and left the bar
-/// finishing at a fraction before snapping to 100%.
-const ESTIMATE_PERCENTILE: f32 = 0.50;
+/// Optimism factor applied to the fitted estimate. The bar climbs linearly to
+/// its 85% cap over the estimated duration, so aiming slightly *below* the
+/// typical run makes it reliably reach ~3/4 (and briefly wait) rather than snap
+/// up from a fraction. This machine's speed varies run to run (battery vs.
+/// adapter); biasing toward the faster case keeps the bar visibly progressing.
+const ESTIMATE_OPTIMISM: f32 = 0.9;
 
 /// Derive `(base_secs, rtf)` from recorded `(audio_secs, transcription_secs)`
-/// samples, or `None` when there are too few to be meaningful.
+/// samples by ordinary least squares, or `None` when there are too few to be
+/// meaningful or the fit is degenerate.
+///
+/// Least squares fits `transcription ≈ base + rtf * audio` directly, which is
+/// unbiased. The previous approach — a median short-clip time for `base` plus a
+/// separate percentile of `transcription / audio` for `rtf` — double-counted the
+/// fixed overhead (that ratio still carries `base / audio`), inflating the
+/// estimate by ~30% and leaving the bar finishing around half.
 fn estimate_coefficients(rows: &[(f32, f32)]) -> Option<(f32, f32)> {
     if rows.len() < ESTIMATE_MIN_SAMPLES {
         return None;
     }
 
-    // Marginal cost per second of audio, measured on longer clips (where the
-    // fixed overhead is amortised) at the 90th percentile.
-    let mut long_rtfs: Vec<f32> = rows
-        .iter()
-        .filter(|(a, _)| *a >= ESTIMATE_SHORT_CLIP_SECS)
-        .map(|(a, t)| t / a)
-        .collect();
-    let rtf = percentile(&mut long_rtfs, ESTIMATE_PERCENTILE).unwrap_or(ESTIMATE_RTF);
+    let n = rows.len() as f32;
+    let sum_a: f32 = rows.iter().map(|(a, _)| *a).sum();
+    let sum_t: f32 = rows.iter().map(|(_, t)| *t).sum();
+    let sum_aa: f32 = rows.iter().map(|(a, _)| a * a).sum();
+    let sum_at: f32 = rows.iter().map(|(a, t)| a * t).sum();
 
-    // Fixed overhead: the median transcription time of short clips (robust to
-    // the occasional cold-start outlier).
-    let mut short_times: Vec<f32> = rows
-        .iter()
-        .filter(|(a, _)| *a < ESTIMATE_SHORT_CLIP_SECS)
-        .map(|(_, t)| *t)
-        .collect();
-    let base = median(&mut short_times).unwrap_or(ESTIMATE_BASE_SECS);
+    let denom = n * sum_aa - sum_a * sum_a;
+    if denom.abs() < f32::EPSILON {
+        return None;
+    }
+    let rtf = (n * sum_at - sum_a * sum_t) / denom;
+    let base = (sum_t - rtf * sum_a) / n;
 
-    Some((base, rtf))
+    // Reject a nonsensical fit (near-constant audio lengths, or a downward slope
+    // pulled from noise) and fall back to the static reference instead.
+    if !rtf.is_finite() || !base.is_finite() || rtf <= 0.0 {
+        return None;
+    }
+    Some((base.max(0.0), rtf))
 }
 
 /// Read `(audio_secs, transcription_secs)` rows from `timings.csv`, skipping the
@@ -1237,31 +1242,6 @@ fn read_timings() -> Vec<(f32, f32)> {
         }
     }
     rows
-}
-
-/// Nearest-rank percentile (`p` in 0.0..=1.0). Sorts `values` in place.
-fn percentile(values: &mut [f32], p: f32) -> Option<f32> {
-    if values.is_empty() {
-        return None;
-    }
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let rank = (p * values.len() as f32).ceil() as usize;
-    let index = rank.saturating_sub(1).min(values.len() - 1);
-    Some(values[index])
-}
-
-/// Median of `values`. Sorts `values` in place.
-fn median(values: &mut [f32]) -> Option<f32> {
-    if values.is_empty() {
-        return None;
-    }
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let n = values.len();
-    Some(if n % 2 == 1 {
-        values[n / 2]
-    } else {
-        (values[n / 2 - 1] + values[n / 2]) / 2.0
-    })
 }
 
 fn model_download_lock() -> &'static Mutex<()> {
@@ -1418,24 +1398,8 @@ fn strip_trailing_subtitle_credit(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ESTIMATE_BASE_SECS, ESTIMATE_RTF, estimate_coefficients, median, percentile,
-        strip_trailing_subtitle_credit,
+        ESTIMATE_BASE_SECS, ESTIMATE_RTF, estimate_coefficients, strip_trailing_subtitle_credit,
     };
-
-    #[test]
-    fn percentile_nearest_rank() {
-        let mut v = [1.0, 2.0, 3.0, 4.0, 5.0];
-        assert_eq!(percentile(&mut v, 0.9), Some(5.0));
-        assert_eq!(percentile(&mut v, 0.5), Some(3.0));
-        assert_eq!(percentile(&mut [], 0.9), None);
-    }
-
-    #[test]
-    fn median_odd_and_even() {
-        assert_eq!(median(&mut [3.0, 1.0, 2.0]), Some(2.0));
-        assert_eq!(median(&mut [1.0, 2.0, 3.0, 4.0]), Some(2.5));
-        assert_eq!(median(&mut []), None);
-    }
 
     #[test]
     fn estimate_coefficients_falls_back_when_too_few_samples() {
@@ -1444,8 +1408,20 @@ mod tests {
     }
 
     #[test]
-    fn estimate_coefficients_uses_recorded_samples() {
-        // Short clips set the base (median overhead); long clips set the rtf.
+    fn estimate_coefficients_rejects_degenerate_fit() {
+        // Identical audio lengths give a zero-variance x column: no slope to fit.
+        let rows = [
+            (10.0, 3.0),
+            (10.0, 4.0),
+            (10.0, 3.5),
+            (10.0, 3.2),
+            (10.0, 3.8),
+        ];
+        assert_eq!(estimate_coefficients(&rows), None);
+    }
+
+    #[test]
+    fn estimate_coefficients_fits_least_squares() {
         let rows = [
             (2.0, 2.0),
             (3.0, 4.0),
@@ -1455,10 +1431,10 @@ mod tests {
             (80.0, 24.0),
         ];
         let (base, rtf) = estimate_coefficients(&rows).expect("enough samples");
-        assert!((base - 3.0).abs() < 1e-3, "base was {base}");
-        assert!((rtf - 0.3).abs() < 1e-3, "rtf was {rtf}");
+        assert!((base - 1.77).abs() < 0.05, "base was {base}");
+        assert!((rtf - 0.271).abs() < 0.01, "rtf was {rtf}");
         // Adapting beats the static reference for this faster-than-default set.
-        assert!(rtf < ESTIMATE_RTF + 0.05 && base < ESTIMATE_BASE_SECS + 2.0);
+        assert!(rtf < ESTIMATE_RTF && base < ESTIMATE_BASE_SECS);
     }
 
     #[test]
