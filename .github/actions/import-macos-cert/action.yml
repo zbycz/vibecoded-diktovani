@@ -1,0 +1,69 @@
+name: Import macOS signing certificate
+description: >
+  Imports the self-signed code-signing certificate into a temporary keychain
+  so codesign can find it, and resolves the identity name for SIGNING_IDENTITY.
+inputs:
+  p12-base64:
+    description: Base64-encoded .p12 certificate. Empty skips signing (unsigned build).
+    required: false
+  p12-password:
+    description: Password protecting the .p12 file
+    required: false
+outputs:
+  identity:
+    description: Codesign identity name found in the imported certificate, empty if signing was skipped
+    value: ${{ steps.identity.outputs.identity }}
+  cert-path:
+    description: Path to the PEM-encoded public certificate (no private key), empty if signing was skipped
+    value: ${{ steps.import.outputs.cert-path }}
+runs:
+  using: composite
+  steps:
+    - if: ${{ inputs.p12-base64 == '' }}
+      shell: bash
+      run: echo "::warning::MACOS_CERT_P12 secret not set — building unsigned. Accessibility permission will not persist across rebuilds."
+    - id: import
+      if: ${{ inputs.p12-base64 != '' }}
+      shell: bash
+      env:
+        KEYCHAIN: diktovani-signing.keychain-db
+        P12_BASE64: ${{ inputs.p12-base64 }}
+        P12_PASSWORD: ${{ inputs.p12-password }}
+      run: |
+        KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+
+        security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+        security set-keychain-settings -lut 21600 "$KEYCHAIN"
+        security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+        echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+        security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+        rm -f "$RUNNER_TEMP/cert.p12"
+
+        # Public-only export (no private key) so users can trust this exact
+        # certificate on their own machine instead of unquarantining every
+        # single download.
+        CERT_PATH="$RUNNER_TEMP/diktovani-signing-cert.pem"
+        security find-certificate -a -p "$KEYCHAIN" > "$CERT_PATH"
+        echo "cert-path=$CERT_PATH" >> "$GITHUB_OUTPUT"
+
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+        security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+    - id: identity
+      if: ${{ inputs.p12-base64 != '' }}
+      shell: bash
+      env:
+        KEYCHAIN: diktovani-signing.keychain-db
+      run: |
+        # No -v: it only lists identities that pass system trust validation,
+        # which a self-signed cert never does on a fresh keychain. Untrusted
+        # identities are still listed, just annotated with the reason inside
+        # the quotes (e.g. `"Diktovani Developer (CSSMERR_TP_NOT_TRUSTED)"`),
+        # so strip that suffix to recover the actual certificate name.
+        IDENTITY="$(security find-identity -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(.*\)"/\1/p' | head -n 1)"
+        IDENTITY="${IDENTITY% (*}"
+        if [[ -z "$IDENTITY" ]]; then
+          echo "::error::No codesigning identity found in imported certificate"
+          exit 1
+        fi
+        echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"

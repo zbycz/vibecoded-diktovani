@@ -55,12 +55,25 @@ jobs:
           git tag "${{ steps.version.outputs.tag }}"
           git push origin HEAD "${{ steps.version.outputs.tag }}"
 
+      - name: Import signing certificate
+        id: cert
+        uses: ./.github/actions/import-macos-cert
+        with:
+          p12-base64: ${{ secrets.MACOS_CERT_P12 }}
+          p12-password: ${{ secrets.MACOS_CERT_PASSWORD }}
+
       - name: Build application bundle
         run: ./release.sh
+        env:
+          SIGNING_IDENTITY: ${{ steps.cert.outputs.identity }}
 
       - name: Package application bundle
         run: |
           ditto -c -k --sequesterRsrc --keepParent "Diktovani.app" "Diktovani.app.zip"
+
+      - name: Export signing certificate for distribution
+        if: ${{ steps.cert.outputs.cert-path != '' }}
+        run: cp "${{ steps.cert.outputs.cert-path }}" Diktovani-Developer.pem
 
       - name: Generate release notes
         run: |
@@ -76,7 +89,7 @@ jobs:
             echo ""
             echo " "
             echo ""
-            echo "The Diktovani.app file is not signed. To run a file downloaded from internet, run \`xattr -rd com.apple.quarantine Diktovani.app\`."
+            echo "The Diktovani.app is self-signed. Run `xattr -rd com.apple.quarantine Diktovani.app`, or trust the cert below." # security add-trusted-cert -p codeSign -r trustRoot -k ~/Library/Keychains/login.keychain-db Diktovani-Developer.pem
             echo ""
             if [ -n "$PREV" ]; then
               echo "**Full Changelog**: https://github.com/zbycz/vibecoded-diktovani/compare/${PREV}...${CURRENT}"
@@ -87,5 +100,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          files: Diktovani.app.zip
+          files: |
+            Diktovani.app.zip
+            Diktovani-Developer.pem
           body_path: RELEASE_NOTES.md
