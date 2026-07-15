@@ -652,6 +652,12 @@ impl DiktovaniApp {
             return;
         }
 
+        // Paint the "recording" icon *before* the blocking audio-device setup
+        // below. start_new_recording() can take up to ~1s on macOS (CoreAudio
+        // format enumeration + stream build) and runs on this UI thread, so
+        // without this the icon only flips once it returns — the visible lag.
+        self.refresh_tray(TrayVisualState::Recording);
+
         match self.recorder.start_new_recording() {
             Ok(()) => {
                 let model_manager = self.model_manager.clone();
@@ -1099,13 +1105,26 @@ fn apply_macos_symbol(
         if let Some(colored) = image.imageWithSymbolConfiguration(&config) {
             colored.setTemplate(false);
             button.setImage(Some(&colored));
+            force_display(&button);
             return true;
         }
     }
 
     image.setTemplate(true);
     button.setImage(Some(&image));
+    force_display(&button);
     true
+}
+
+/// Force a synchronous redraw of the status-bar button. `setImage:` only marks
+/// the button dirty and defers the draw to the next run-loop pass; when the UI
+/// thread is about to block (e.g. in start_new_recording), that pass never comes
+/// in time, so we draw right now instead.
+#[cfg(target_os = "macos")]
+fn force_display(button: &objc2_app_kit::NSStatusBarButton) {
+    unsafe {
+        let _: () = objc2::msg_send![button, display];
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
