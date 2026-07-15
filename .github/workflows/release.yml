@@ -71,6 +71,10 @@ jobs:
         run: |
           ditto -c -k --sequesterRsrc --keepParent "Diktovani.app" "Diktovani.app.zip"
 
+      - name: Export signing certificate for distribution
+        if: ${{ steps.cert.outputs.cert-path != '' }}
+        run: cp "${{ steps.cert.outputs.cert-path }}" Diktovani-Developer.pem
+
       - name: Generate release notes
         run: |
           CURRENT="${{ steps.version.outputs.tag }}"
@@ -85,7 +89,10 @@ jobs:
             echo ""
             echo " "
             echo ""
-            echo "The Diktovani.app file is signed with a self-signed developer certificate (not notarized by Apple). To run a file downloaded from internet, run \`xattr -rd com.apple.quarantine Diktovani.app\`."
+            echo "The Diktovani.app file is signed with a self-signed developer certificate (not notarized by Apple). To run this application, you have two options:"
+            echo ""
+            echo "- Run \`xattr -rd com.apple.quarantine Diktovani.app\` after unzipping (needed again for every new version you download)."
+            echo "- Or, once: download [Diktovani-Developer.pem](https://github.com/zbycz/vibecoded-diktovani/releases/download/${CURRENT}/Diktovani-Developer.pem) from this release and run \`security add-trusted-cert -p codeSign -r trustRoot -k ~/Library/Keychains/login.keychain-db Diktovani-Developer.pem\` — future versions will then open without any extra steps."
             echo ""
             if [ -n "$PREV" ]; then
               echo "**Full Changelog**: https://github.com/zbycz/vibecoded-diktovani/compare/${PREV}...${CURRENT}"
@@ -96,5 +103,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          files: Diktovani.app.zip
+          files: |
+            Diktovani.app.zip
+            Diktovani-Developer.pem
           body_path: RELEASE_NOTES.md
