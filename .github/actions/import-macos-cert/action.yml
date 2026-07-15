@@ -1,0 +1,47 @@
+name: Import macOS signing certificate
+description: >
+  Imports the self-signed code-signing certificate into a temporary keychain
+  so codesign can find it, and resolves the identity name for SIGNING_IDENTITY.
+inputs:
+  p12-base64:
+    description: Base64-encoded .p12 certificate
+    required: true
+  p12-password:
+    description: Password protecting the .p12 file
+    required: true
+outputs:
+  identity:
+    description: Codesign identity name found in the imported certificate
+    value: ${{ steps.identity.outputs.identity }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        KEYCHAIN: diktovani-signing.keychain-db
+        P12_BASE64: ${{ inputs.p12-base64 }}
+        P12_PASSWORD: ${{ inputs.p12-password }}
+      run: |
+        KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+
+        security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+        security set-keychain-settings -lut 21600 "$KEYCHAIN"
+        security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+        echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+        security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+        rm -f "$RUNNER_TEMP/cert.p12"
+
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+        security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+    - id: identity
+      shell: bash
+      env:
+        KEYCHAIN: diktovani-signing.keychain-db
+      run: |
+        IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(.*\)"/\1/p' | head -n 1)"
+        if [[ -z "$IDENTITY" ]]; then
+          echo "::error::No codesigning identity found in imported certificate"
+          exit 1
+        fi
+        echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
