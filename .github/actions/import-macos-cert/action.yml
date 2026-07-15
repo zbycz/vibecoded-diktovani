@@ -34,19 +34,7 @@ runs:
 
         echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
         security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
-
-        # A self-signed cert has no trust chain, so codesign refuses to use it
-        # (CSSMERR_TP_NOT_TRUSTED) until it's explicitly trusted. Trusting it
-        # normally requires a GUI confirmation dialog, which hangs forever on
-        # this headless runner; `authorizationdb write` tells macOS to allow
-        # that one admin operation non-interactively instead. Safe here since
-        # this VM is a single-purpose, ephemeral CI runner.
-        security find-certificate -a -p "$KEYCHAIN" > "$RUNNER_TEMP/cert.pem"
-        sudo security authorizationdb write com.apple.trust-settings.admin allow
-        sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$RUNNER_TEMP/cert.pem"
-        sudo security authorizationdb remove com.apple.trust-settings.admin || true
-
-        rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/cert.pem"
+        rm -f "$RUNNER_TEMP/cert.p12"
 
         security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
         security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
@@ -56,7 +44,13 @@ runs:
       env:
         KEYCHAIN: diktovani-signing.keychain-db
       run: |
-        IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(.*\)"/\1/p' | head -n 1)"
+        # No -v: it only lists identities that pass system trust validation,
+        # which a self-signed cert never does on a fresh keychain. Untrusted
+        # identities are still listed, just annotated with the reason inside
+        # the quotes (e.g. `"Diktovani Developer (CSSMERR_TP_NOT_TRUSTED)"`),
+        # so strip that suffix to recover the actual certificate name.
+        IDENTITY="$(security find-identity -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(.*\)"/\1/p' | head -n 1)"
+        IDENTITY="${IDENTITY% (*}"
         if [[ -z "$IDENTITY" ]]; then
           echo "::error::No codesigning identity found in imported certificate"
           exit 1
