@@ -36,13 +36,6 @@ runs:
         security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
         rm -f "$RUNNER_TEMP/cert.p12"
 
-        # A self-signed cert isn't trusted by default in a fresh keychain (the
-        # .p12 export doesn't carry trust settings), so `codesign`/`find-identity -v`
-        # would otherwise see it as invalid. Trust it explicitly in this keychain.
-        security find-certificate -a -p "$KEYCHAIN" > "$RUNNER_TEMP/cert.pem"
-        security add-trusted-cert -r trustRoot -k "$KEYCHAIN" "$RUNNER_TEMP/cert.pem"
-        rm -f "$RUNNER_TEMP/cert.pem"
-
         security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
         security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
     - id: identity
@@ -51,7 +44,12 @@ runs:
       env:
         KEYCHAIN: diktovani-signing.keychain-db
       run: |
-        IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(.*\)"/\1/p' | head -n 1)"
+        # No -v here: it only lists identities that pass system trust validation,
+        # which a self-signed cert never does on a fresh keychain (no GUI to
+        # click "Always Trust" on this headless runner). codesign itself doesn't
+        # require trust to sign, only a matching cert+key pair, so an unfiltered
+        # lookup is what we want.
+        IDENTITY="$(security find-identity -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(.*\)"/\1/p' | head -n 1)"
         if [[ -z "$IDENTITY" ]]; then
           echo "::error::No codesigning identity found in imported certificate"
           exit 1
