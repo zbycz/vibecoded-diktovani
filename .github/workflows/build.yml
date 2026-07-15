@@ -24,8 +24,17 @@ jobs:
           SHORT_SHA="${GITHUB_SHA::7}"
           sed -i '' "s/^version = \"\(.*\)\"/version = \"\1-dev-${SHORT_SHA}\"/" Cargo.toml
 
+      - name: Import signing certificate
+        id: cert
+        uses: ./.github/actions/import-macos-cert
+        with:
+          p12-base64: ${{ secrets.MACOS_CERT_P12 }}
+          p12-password: ${{ secrets.MACOS_CERT_PASSWORD }}
+
       - name: Build application bundle
         run: ./release.sh
+        env:
+          SIGNING_IDENTITY: ${{ steps.cert.outputs.identity }}
 
       - name: Package application bundle
         run: |
