@@ -55,8 +55,17 @@ jobs:
           git tag "${{ steps.version.outputs.tag }}"
           git push origin HEAD "${{ steps.version.outputs.tag }}"
 
+      - name: Import signing certificate
+        id: cert
+        uses: ./.github/actions/import-macos-cert
+        with:
+          p12-base64: ${{ secrets.MACOS_CERT_P12 }}
+          p12-password: ${{ secrets.MACOS_CERT_PASSWORD }}
+
       - name: Build application bundle
         run: ./release.sh
+        env:
+          SIGNING_IDENTITY: ${{ steps.cert.outputs.identity }}
 
       - name: Package application bundle
         run: |
@@ -76,7 +85,7 @@ jobs:
             echo ""
             echo " "
             echo ""
-            echo "The Diktovani.app file is not signed. To run a file downloaded from internet, run \`xattr -rd com.apple.quarantine Diktovani.app\`."
+            echo "The Diktovani.app file is signed with a self-signed developer certificate (not notarized by Apple). To run a file downloaded from internet, run \`xattr -rd com.apple.quarantine Diktovani.app\`."
             echo ""
             if [ -n "$PREV" ]; then
               echo "**Full Changelog**: https://github.com/zbycz/vibecoded-diktovani/compare/${PREV}...${CURRENT}"
