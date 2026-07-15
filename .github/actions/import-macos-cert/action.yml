@@ -36,6 +36,13 @@ runs:
         security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
         rm -f "$RUNNER_TEMP/cert.p12"
 
+        # A self-signed cert isn't trusted by default in a fresh keychain (the
+        # .p12 export doesn't carry trust settings), so `codesign`/`find-identity -v`
+        # would otherwise see it as invalid. Trust it explicitly in this keychain.
+        security find-certificate -a -p "$KEYCHAIN" > "$RUNNER_TEMP/cert.pem"
+        security add-trusted-cert -r trustAsRoot -k "$KEYCHAIN" "$RUNNER_TEMP/cert.pem"
+        rm -f "$RUNNER_TEMP/cert.pem"
+
         security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
         security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
     - id: identity
