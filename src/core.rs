@@ -999,7 +999,7 @@ pub fn transcribe_wav_file(
                     break;
                 }
                 let elapsed = started.elapsed().as_secs_f32();
-                let pct = ((elapsed / estimated_secs) * 100.0).clamp(0.0, 75.0) as u8;
+                let pct = ((elapsed / estimated_secs) * 100.0).clamp(0.0, 85.0) as u8;
                 println!("[{:.1}s] [transcribe] progress ~{}%", ts(), pct);
                 cb(pct);
             }
@@ -1173,7 +1173,7 @@ fn estimate_transcription_secs(audio_secs: f32) -> f32 {
 /// static reference formula.
 const ESTIMATE_MIN_SAMPLES: usize = 5;
 /// Optimism factor applied to the fitted estimate. The bar climbs linearly to
-/// its 75% cap over the estimated duration, so aiming slightly *below* the
+/// its 85% cap over the estimated duration, so aiming slightly *below* the
 /// typical run makes it reliably reach ~3/4 (and briefly wait) rather than snap
 /// up from a fraction. This machine's speed varies run to run (battery vs.
 /// adapter); biasing toward the faster case keeps the bar visibly progressing.
