@@ -89,7 +89,7 @@ jobs:
             echo ""
             echo " "
             echo ""
-            echo "The Diktovani.app is self-signed. Run `xattr -rd com.apple.quarantine Diktovani.app`, or trust the cert below." # security add-trusted-cert -p codeSign -r trustRoot -k ~/Library/Keychains/login.keychain-db Diktovani-Developer.pem
+            echo "The Diktovani.app is self-signed. Run \`xattr -rd com.apple.quarantine Diktovani.app\`, or [add to trusted](https://github.com/zbycz/vibecoded-diktovani/wiki/Trust-the-certificate)." 
             echo ""
             if [ -n "$PREV" ]; then
               echo "**Full Changelog**: https://github.com/zbycz/vibecoded-diktovani/compare/${PREV}...${CURRENT}"
