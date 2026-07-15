@@ -89,10 +89,7 @@ jobs:
             echo ""
             echo " "
             echo ""
-            echo "The Diktovani.app file is signed with a self-signed developer certificate (not notarized by Apple). To run this application, you have two options:"
-            echo ""
-            echo "- Run \`xattr -rd com.apple.quarantine Diktovani.app\` after unzipping (needed again for every new version you download)."
-            echo "- Or, once: download [Diktovani-Developer.pem](https://github.com/zbycz/vibecoded-diktovani/releases/download/${CURRENT}/Diktovani-Developer.pem) from this release and run \`security add-trusted-cert -p codeSign -r trustRoot -k ~/Library/Keychains/login.keychain-db Diktovani-Developer.pem\` — future versions will then open without any extra steps."
+            echo "The Diktovani.app is self-signed. Run `xattr -rd com.apple.quarantine Diktovani.app`, or trust the cert below." # security add-trusted-cert -p codeSign -r trustRoot -k ~/Library/Keychains/login.keychain-db Diktovani-Developer.pem
             echo ""
             if [ -n "$PREV" ]; then
               echo "**Full Changelog**: https://github.com/zbycz/vibecoded-diktovani/compare/${PREV}...${CURRENT}"
