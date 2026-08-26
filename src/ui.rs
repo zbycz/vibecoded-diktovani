@@ -216,9 +216,9 @@ impl DiktovaniApp {
         menu.append(&quit_item)?;
 
         let tray_icon = TrayIconBuilder::new()
-            .with_icon(icon_for_state(TrayVisualState::Idle))
+            .with_icon(icon_for_state(TrayVisualState::Idle, self.idle_color()))
             .with_menu(Box::new(menu.clone()))
-            .with_icon_as_template(true)
+            .with_icon_as_template(self.idle_color().is_none())
             .with_menu_on_left_click(false)
             .with_menu_on_right_click(true)
             .build()?;
@@ -341,12 +341,17 @@ impl DiktovaniApp {
             cancel_item.set_text(text);
             cancel_item.set_enabled(enabled);
         }
-        if apply_macos_symbol(tray_icon, state, self.idle_color()) {
+        if apply_macos_symbol(tray_icon, state) {
             return;
         }
-        if let Err(err) = tray_icon.set_icon_with_as_template(Some(icon_for_state(state)), true) {
+        let idle_color = self.idle_color();
+        let icon = icon_for_state(state, idle_color);
+        // A tinted icon carries its own color, so it must not be a template.
+        let as_template = idle_color.is_none() || !matches!(state, TrayVisualState::Idle);
+        if let Err(err) = tray_icon.set_icon_with_as_template(Some(icon), as_template) {
             eprintln!("[tray] failed to update icon: {err}");
         }
+        force_display_tray(tray_icon);
     }
 
     fn current_visual_state(&self) -> TrayVisualState {
@@ -1057,22 +1062,16 @@ fn download_detail_text(progress: &ModelDownloadProgress) -> String {
     }
 }
 
-fn icon_for_state(state: TrayVisualState) -> Icon {
+fn icon_for_state(state: TrayVisualState, idle_color: Option<(f64, f64, f64)>) -> Icon {
     match state {
-        TrayVisualState::Idle => load_microphone_icon(),
+        TrayVisualState::Idle => load_microphone_icon(idle_color),
         TrayVisualState::Recording => draw_checkmark_icon(),
         TrayVisualState::Transcribing { progress, submit } => draw_progress_icon(progress, submit),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn apply_macos_symbol(
-    tray_icon: &TrayIcon,
-    state: TrayVisualState,
-    idle_color: Option<(f64, f64, f64)>,
-) -> bool {
-    use objc2_app_kit::{NSColor, NSImageSymbolConfiguration};
-
+fn apply_macos_symbol(tray_icon: &TrayIcon, state: TrayVisualState) -> bool {
     let Some(status_item) = tray_icon.ns_status_item() else {
         return false;
     };
@@ -1083,10 +1082,11 @@ fn apply_macos_symbol(
         return false;
     };
 
+    // Only the checkmark still comes from SF Symbols; the idle glyph is our own
+    // microphone with the ABC on its body and the progress ring is hand-drawn.
     let (symbol_name, description) = match state {
-        TrayVisualState::Idle => ("mic.fill", "Microphone"),
         TrayVisualState::Recording => ("checkmark", "Stop recording"),
-        TrayVisualState::Transcribing { .. } => return false,
+        TrayVisualState::Idle | TrayVisualState::Transcribing { .. } => return false,
     };
     let symbol_name = NSString::from_str(symbol_name);
     let description = NSString::from_str(description);
@@ -1097,24 +1097,30 @@ fn apply_macos_symbol(
         return false;
     };
 
-    // Tint the idle microphone with the chosen pastel color; everything else
-    // stays a monochrome menu-bar template that adapts to light/dark.
-    if let (TrayVisualState::Idle, Some((r, g, b))) = (state, idle_color) {
-        let color = NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 1.0);
-        let config = NSImageSymbolConfiguration::configurationWithHierarchicalColor(&color);
-        if let Some(colored) = image.imageWithSymbolConfiguration(&config) {
-            colored.setTemplate(false);
-            button.setImage(Some(&colored));
-            force_display(&button);
-            return true;
-        }
-    }
-
     image.setTemplate(true);
     button.setImage(Some(&image));
     force_display(&button);
     true
 }
+
+/// Same synchronous redraw, for the icons we set through `tray-icon` rather
+/// than through an SF Symbol.
+#[cfg(target_os = "macos")]
+fn force_display_tray(tray_icon: &TrayIcon) {
+    let Some(status_item) = tray_icon.ns_status_item() else {
+        return;
+    };
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let Some(button) = status_item.button(mtm) else {
+        return;
+    };
+    force_display(&button);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn force_display_tray(_tray_icon: &TrayIcon) {}
 
 /// Force a synchronous redraw of the status-bar button. `setImage:` only marks
 /// the button dirty and defers the draw to the next run-loop pass; when the UI
@@ -1128,10 +1134,6 @@ fn force_display(button: &objc2_app_kit::NSStatusBarButton) {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn apply_macos_symbol(
-    _tray_icon: &TrayIcon,
-    _state: TrayVisualState,
-    _idle_color: Option<(f64, f64, f64)>,
-) -> bool {
+fn apply_macos_symbol(_tray_icon: &TrayIcon, _state: TrayVisualState) -> bool {
     false
 }

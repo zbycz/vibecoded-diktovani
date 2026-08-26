@@ -1,14 +1,31 @@
 use tray_icon::Icon;
 
-pub fn load_microphone_icon() -> Icon {
-    let image = image::load_from_memory_with_format(
-        include_bytes!("../assets/AppIcon.appiconset/icon_32x32.png"),
-        image::ImageFormat::Png,
-    )
-    .expect("embedded microphone icon should decode")
-    .into_rgba8();
+/// The menu-bar rendition: 36x36 so it maps 1:1 onto the 18 pt status item on a
+/// Retina display, where `tray-icon` pins every icon to 18 pt of height.
+const MENUBAR_ICON: &[u8] = include_bytes!("../assets/menubar/icon_36x36.png");
+
+/// Load the ABC microphone for the tray. When `color` is given the black
+/// artwork is repainted in that color (alpha untouched), because a tinted icon
+/// can no longer be handed to macOS as a template image.
+pub fn load_microphone_icon(color: Option<(f64, f64, f64)>) -> Icon {
+    let image = image::load_from_memory_with_format(MENUBAR_ICON, image::ImageFormat::Png)
+        .expect("embedded microphone icon should decode")
+        .into_rgba8();
     let (width, height) = image.dimensions();
-    Icon::from_rgba(image.into_raw(), width, height).expect("valid embedded tray icon")
+    let mut rgba = image.into_raw();
+
+    if let Some((r, g, b)) = color {
+        let tint = [to_u8(r), to_u8(g), to_u8(b)];
+        for pixel in rgba.chunks_exact_mut(4) {
+            pixel[..3].copy_from_slice(&tint);
+        }
+    }
+
+    Icon::from_rgba(rgba, width, height).expect("valid embedded tray icon")
+}
+
+fn to_u8(component: f64) -> u8 {
+    (component.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 pub fn draw_checkmark_icon() -> Icon {
