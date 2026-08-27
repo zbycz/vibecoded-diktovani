@@ -353,8 +353,8 @@ impl DiktovaniApp {
         }
         let idle_color = self.idle_color();
         let as_template = idle_color.is_none() || !matches!(state, TrayVisualState::Idle);
-        if let Err(err) =
-            tray_icon.set_icon_with_as_template(Some(icon_for_state(state, idle_color)), as_template)
+        if let Err(err) = tray_icon
+            .set_icon_with_as_template(Some(icon_for_state(state, idle_color)), as_template)
         {
             eprintln!("[tray] failed to update icon: {err}");
         }

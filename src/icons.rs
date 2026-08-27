@@ -43,61 +43,54 @@ pub fn load_microphone_icon(color: Option<(u8, u8, u8)>) -> Icon {
 /// Signed distance to the microphone glyph: capsule, cradle arc, stem and base
 /// unioned together, with the letter "A" subtracted out of the capsule.
 fn microphone_distance(x: f32, y: f32) -> f32 {
-    let mut distance = sd_round_box(x, y, MIC_CENTER_X, 31.5, 17.0, 27.5, 17.0);
-    distance = distance.min(sd_arc(x, y, MIC_CENTER_X, 46.0, 28.0, 4.5, 41.0));
-    distance = distance.min(sd_segment(x, y, MIC_CENTER_X, 74.0, MIC_CENTER_X, 90.0, 4.5));
-    distance = distance.min(sd_round_box(x, y, MIC_CENTER_X, 92.0, 21.0, 4.0, 4.0));
-    distance.max(-letter_a_distance(x, y))
+    let p = (x, y);
+    let mut distance = sd_round_box(p, (MIC_CENTER_X, 31.5), (17.0, 27.5), 17.0);
+    distance = distance.min(sd_arc(p, (MIC_CENTER_X, 46.0), 28.0, 4.5, 41.0));
+    distance = distance.min(sd_segment(
+        p,
+        (MIC_CENTER_X, 74.0),
+        (MIC_CENTER_X, 90.0),
+        4.5,
+    ));
+    distance = distance.min(sd_round_box(p, (MIC_CENTER_X, 92.0), (21.0, 4.0), 4.0));
+    distance.max(-letter_a_distance(p))
 }
 
-fn letter_a_distance(x: f32, y: f32) -> f32 {
+fn letter_a_distance(p: (f32, f32)) -> f32 {
     const TOP: f32 = 14.0;
     const BOTTOM: f32 = 48.0;
     const HALF_WIDTH: f32 = 11.0;
     const STROKE: f32 = 2.7;
     const CROSSBAR: f32 = 0.62;
 
+    let apex = (MIC_CENTER_X, TOP);
     let bar_y = TOP + (BOTTOM - TOP) * CROSSBAR;
     let bar_half_width = HALF_WIDTH * CROSSBAR;
 
-    let mut distance = sd_segment(x, y, MIC_CENTER_X, TOP, MIC_CENTER_X - HALF_WIDTH, BOTTOM, STROKE);
+    let mut distance = sd_segment(p, apex, (MIC_CENTER_X - HALF_WIDTH, BOTTOM), STROKE);
     distance = distance.min(sd_segment(
-        x,
-        y,
-        MIC_CENTER_X,
-        TOP,
-        MIC_CENTER_X + HALF_WIDTH,
-        BOTTOM,
+        p,
+        apex,
+        (MIC_CENTER_X + HALF_WIDTH, BOTTOM),
         STROKE,
     ));
     distance.min(sd_segment(
-        x,
-        y,
-        MIC_CENTER_X - bar_half_width,
-        bar_y,
-        MIC_CENTER_X + bar_half_width,
-        bar_y,
+        p,
+        (MIC_CENTER_X - bar_half_width, bar_y),
+        (MIC_CENTER_X + bar_half_width, bar_y),
         STROKE,
     ))
 }
 
-fn sd_round_box(
-    x: f32,
-    y: f32,
-    center_x: f32,
-    center_y: f32,
-    half_width: f32,
-    half_height: f32,
-    radius: f32,
-) -> f32 {
-    let qx = (x - center_x).abs() - half_width + radius;
-    let qy = (y - center_y).abs() - half_height + radius;
+fn sd_round_box(p: (f32, f32), center: (f32, f32), half_size: (f32, f32), radius: f32) -> f32 {
+    let qx = (p.0 - center.0).abs() - half_size.0 + radius;
+    let qy = (p.1 - center.1).abs() - half_size.1 + radius;
     qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - radius
 }
 
-fn sd_segment(x: f32, y: f32, ax: f32, ay: f32, bx: f32, by: f32, half_width: f32) -> f32 {
-    let (px, py) = (x - ax, y - ay);
-    let (dx, dy) = (bx - ax, by - ay);
+fn sd_segment(p: (f32, f32), a: (f32, f32), b: (f32, f32), half_width: f32) -> f32 {
+    let (px, py) = (p.0 - a.0, p.1 - a.1);
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let length_squared = dx * dx + dy * dy;
     let t = if length_squared == 0.0 {
         0.0
@@ -107,11 +100,11 @@ fn sd_segment(x: f32, y: f32, ax: f32, ay: f32, bx: f32, by: f32, half_width: f3
     (px - dx * t).hypot(py - dy * t) - half_width
 }
 
-/// Ring of radius `radius` clipped to everything below `y_min`, giving the
-/// U-shaped cradle the microphone hangs in.
-fn sd_arc(x: f32, y: f32, center_x: f32, center_y: f32, radius: f32, half_stroke: f32, y_min: f32) -> f32 {
-    let ring = ((x - center_x).hypot(y - center_y) - radius).abs() - half_stroke;
-    ring.max(y_min - y)
+/// Ring of `radius` clipped to everything below `y_min`, giving the U-shaped
+/// cradle the microphone hangs in.
+fn sd_arc(p: (f32, f32), center: (f32, f32), radius: f32, half_stroke: f32, y_min: f32) -> f32 {
+    let ring = ((p.0 - center.0).hypot(p.1 - center.1) - radius).abs() - half_stroke;
+    ring.max(y_min - p.1)
 }
 
 pub fn draw_checkmark_icon() -> Icon {
