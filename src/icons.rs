@@ -1,14 +1,117 @@
 use tray_icon::Icon;
 
-pub fn load_microphone_icon() -> Icon {
-    let image = image::load_from_memory_with_format(
-        include_bytes!("../assets/AppIcon.appiconset/icon_32x32.png"),
-        image::ImageFormat::Png,
-    )
-    .expect("embedded microphone icon should decode")
-    .into_rgba8();
-    let (width, height) = image.dimensions();
-    Icon::from_rgba(image.into_raw(), width, height).expect("valid embedded tray icon")
+/// The idle menu-bar glyph — a microphone whose capsule carries a knocked-out
+/// letter "A" — described as vector geometry in a 72x100 design box and
+/// rasterised on demand. Keeping it as shapes rather than a bitmap lets the
+/// glyph stay crisp at any size and be filled with an arbitrary color.
+const DESIGN_WIDTH: f32 = 72.0;
+const DESIGN_HEIGHT: f32 = 100.0;
+const MIC_CENTER_X: f32 = 36.0;
+const MIC_RENDER_HEIGHT: usize = 72;
+
+pub fn load_microphone_icon(color: Option<(u8, u8, u8)>) -> Icon {
+    let height = MIC_RENDER_HEIGHT;
+    let scale = DESIGN_HEIGHT / height as f32;
+    let width = (DESIGN_WIDTH / scale).round() as usize;
+    let x_offset = (DESIGN_WIDTH - width as f32 * scale) / 2.0;
+    let (r, g, b) = color.unwrap_or((0, 0, 0));
+
+    let mut rgba = vec![0u8; width * height * 4];
+    for y in 0..height {
+        for x in 0..width {
+            let distance = microphone_distance(
+                x_offset + (x as f32 + 0.5) * scale,
+                (y as f32 + 0.5) * scale,
+            );
+            let coverage = (0.5 - distance / scale).clamp(0.0, 1.0);
+            set_pixel(
+                &mut rgba,
+                width,
+                x,
+                y,
+                r,
+                g,
+                b,
+                (coverage * 255.0).round() as u8,
+            );
+        }
+    }
+
+    Icon::from_rgba(rgba, width as u32, height as u32).expect("valid microphone tray icon")
+}
+
+/// Signed distance to the microphone glyph: capsule, cradle arc, stem and base
+/// unioned together, with the letter "A" subtracted out of the capsule.
+fn microphone_distance(x: f32, y: f32) -> f32 {
+    let mut distance = sd_round_box(x, y, MIC_CENTER_X, 31.5, 17.0, 27.5, 17.0);
+    distance = distance.min(sd_arc(x, y, MIC_CENTER_X, 46.0, 28.0, 4.5, 41.0));
+    distance = distance.min(sd_segment(x, y, MIC_CENTER_X, 74.0, MIC_CENTER_X, 90.0, 4.5));
+    distance = distance.min(sd_round_box(x, y, MIC_CENTER_X, 92.0, 21.0, 4.0, 4.0));
+    distance.max(-letter_a_distance(x, y))
+}
+
+fn letter_a_distance(x: f32, y: f32) -> f32 {
+    const TOP: f32 = 14.0;
+    const BOTTOM: f32 = 48.0;
+    const HALF_WIDTH: f32 = 11.0;
+    const STROKE: f32 = 2.7;
+    const CROSSBAR: f32 = 0.62;
+
+    let bar_y = TOP + (BOTTOM - TOP) * CROSSBAR;
+    let bar_half_width = HALF_WIDTH * CROSSBAR;
+
+    let mut distance = sd_segment(x, y, MIC_CENTER_X, TOP, MIC_CENTER_X - HALF_WIDTH, BOTTOM, STROKE);
+    distance = distance.min(sd_segment(
+        x,
+        y,
+        MIC_CENTER_X,
+        TOP,
+        MIC_CENTER_X + HALF_WIDTH,
+        BOTTOM,
+        STROKE,
+    ));
+    distance.min(sd_segment(
+        x,
+        y,
+        MIC_CENTER_X - bar_half_width,
+        bar_y,
+        MIC_CENTER_X + bar_half_width,
+        bar_y,
+        STROKE,
+    ))
+}
+
+fn sd_round_box(
+    x: f32,
+    y: f32,
+    center_x: f32,
+    center_y: f32,
+    half_width: f32,
+    half_height: f32,
+    radius: f32,
+) -> f32 {
+    let qx = (x - center_x).abs() - half_width + radius;
+    let qy = (y - center_y).abs() - half_height + radius;
+    qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - radius
+}
+
+fn sd_segment(x: f32, y: f32, ax: f32, ay: f32, bx: f32, by: f32, half_width: f32) -> f32 {
+    let (px, py) = (x - ax, y - ay);
+    let (dx, dy) = (bx - ax, by - ay);
+    let length_squared = dx * dx + dy * dy;
+    let t = if length_squared == 0.0 {
+        0.0
+    } else {
+        ((px * dx + py * dy) / length_squared).clamp(0.0, 1.0)
+    };
+    (px - dx * t).hypot(py - dy * t) - half_width
+}
+
+/// Ring of radius `radius` clipped to everything below `y_min`, giving the
+/// U-shaped cradle the microphone hangs in.
+fn sd_arc(x: f32, y: f32, center_x: f32, center_y: f32, radius: f32, half_stroke: f32, y_min: f32) -> f32 {
+    let ring = ((x - center_x).hypot(y - center_y) - radius).abs() - half_stroke;
+    ring.max(y_min - y)
 }
 
 pub fn draw_checkmark_icon() -> Icon {

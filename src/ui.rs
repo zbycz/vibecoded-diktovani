@@ -215,10 +215,11 @@ impl DiktovaniApp {
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&quit_item)?;
 
+        let idle_color = self.idle_color();
         let tray_icon = TrayIconBuilder::new()
-            .with_icon(icon_for_state(TrayVisualState::Idle))
+            .with_icon(icon_for_state(TrayVisualState::Idle, idle_color))
             .with_menu(Box::new(menu.clone()))
-            .with_icon_as_template(true)
+            .with_icon_as_template(idle_color.is_none())
             .with_menu_on_left_click(false)
             .with_menu_on_right_click(true)
             .build()?;
@@ -276,11 +277,17 @@ impl DiktovaniApp {
 
     /// sRGB components of the selected idle-icon color, or `None` for the
     /// default monochrome template.
-    fn idle_color(&self) -> Option<(f64, f64, f64)> {
+    fn idle_color(&self) -> Option<(u8, u8, u8)> {
         ICON_COLORS
             .iter()
             .find(|(id, ..)| *id == self.settings.icon_color)
-            .map(|(_, _, r, g, b)| (*r, *g, *b))
+            .map(|(_, _, r, g, b)| {
+                (
+                    (*r * 255.0).round() as u8,
+                    (*g * 255.0).round() as u8,
+                    (*b * 255.0).round() as u8,
+                )
+            })
     }
 
     /// Build the "Jazyk přepisu" submenu: Czech and English pinned on top, a
@@ -341,12 +348,17 @@ impl DiktovaniApp {
             cancel_item.set_text(text);
             cancel_item.set_enabled(enabled);
         }
-        if apply_macos_symbol(tray_icon, state, self.idle_color()) {
+        if apply_macos_symbol(tray_icon, state) {
             return;
         }
-        if let Err(err) = tray_icon.set_icon_with_as_template(Some(icon_for_state(state)), true) {
+        let idle_color = self.idle_color();
+        let as_template = idle_color.is_none() || !matches!(state, TrayVisualState::Idle);
+        if let Err(err) =
+            tray_icon.set_icon_with_as_template(Some(icon_for_state(state, idle_color)), as_template)
+        {
             eprintln!("[tray] failed to update icon: {err}");
         }
+        force_tray_redraw(tray_icon);
     }
 
     fn current_visual_state(&self) -> TrayVisualState {
@@ -1057,22 +1069,16 @@ fn download_detail_text(progress: &ModelDownloadProgress) -> String {
     }
 }
 
-fn icon_for_state(state: TrayVisualState) -> Icon {
+fn icon_for_state(state: TrayVisualState, idle_color: Option<(u8, u8, u8)>) -> Icon {
     match state {
-        TrayVisualState::Idle => load_microphone_icon(),
+        TrayVisualState::Idle => load_microphone_icon(idle_color),
         TrayVisualState::Recording => draw_checkmark_icon(),
         TrayVisualState::Transcribing { progress, submit } => draw_progress_icon(progress, submit),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn apply_macos_symbol(
-    tray_icon: &TrayIcon,
-    state: TrayVisualState,
-    idle_color: Option<(f64, f64, f64)>,
-) -> bool {
-    use objc2_app_kit::{NSColor, NSImageSymbolConfiguration};
-
+fn apply_macos_symbol(tray_icon: &TrayIcon, state: TrayVisualState) -> bool {
     let Some(status_item) = tray_icon.ns_status_item() else {
         return false;
     };
@@ -1084,9 +1090,8 @@ fn apply_macos_symbol(
     };
 
     let (symbol_name, description) = match state {
-        TrayVisualState::Idle => ("mic.fill", "Microphone"),
         TrayVisualState::Recording => ("checkmark", "Stop recording"),
-        TrayVisualState::Transcribing { .. } => return false,
+        TrayVisualState::Idle | TrayVisualState::Transcribing { .. } => return false,
     };
     let symbol_name = NSString::from_str(symbol_name);
     let description = NSString::from_str(description);
@@ -1096,19 +1101,6 @@ fn apply_macos_symbol(
     ) else {
         return false;
     };
-
-    // Tint the idle microphone with the chosen pastel color; everything else
-    // stays a monochrome menu-bar template that adapts to light/dark.
-    if let (TrayVisualState::Idle, Some((r, g, b))) = (state, idle_color) {
-        let color = NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 1.0);
-        let config = NSImageSymbolConfiguration::configurationWithHierarchicalColor(&color);
-        if let Some(colored) = image.imageWithSymbolConfiguration(&config) {
-            colored.setTemplate(false);
-            button.setImage(Some(&colored));
-            force_display(&button);
-            return true;
-        }
-    }
 
     image.setTemplate(true);
     button.setImage(Some(&image));
@@ -1127,11 +1119,25 @@ fn force_display(button: &objc2_app_kit::NSStatusBarButton) {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn force_tray_redraw(tray_icon: &TrayIcon) {
+    let Some(status_item) = tray_icon.ns_status_item() else {
+        return;
+    };
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    if let Some(button) = status_item.button(mtm) {
+        force_display(&button);
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
-fn apply_macos_symbol(
-    _tray_icon: &TrayIcon,
-    _state: TrayVisualState,
-    _idle_color: Option<(f64, f64, f64)>,
-) -> bool {
+fn apply_macos_symbol(_tray_icon: &TrayIcon, _state: TrayVisualState) -> bool {
     false
 }
+
+/// Force a synchronous redraw after handing the icon to `tray-icon`, for the
+/// same reason as `force_display` above.
+#[cfg(not(target_os = "macos"))]
+fn force_tray_redraw(_tray_icon: &TrayIcon) {}
