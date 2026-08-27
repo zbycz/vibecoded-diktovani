@@ -1119,6 +1119,8 @@ fn force_display(button: &objc2_app_kit::NSStatusBarButton) {
     }
 }
 
+/// Same reason as `force_display`, but for the icon path that goes through
+/// `tray-icon` instead of setting the button image directly.
 #[cfg(target_os = "macos")]
 fn force_tray_redraw(tray_icon: &TrayIcon) {
     let Some(status_item) = tray_icon.ns_status_item() else {
@@ -1137,7 +1139,5 @@ fn apply_macos_symbol(_tray_icon: &TrayIcon, _state: TrayVisualState) -> bool {
     false
 }
 
-/// Force a synchronous redraw after handing the icon to `tray-icon`, for the
-/// same reason as `force_display` above.
 #[cfg(not(target_os = "macos"))]
 fn force_tray_redraw(_tray_icon: &TrayIcon) {}

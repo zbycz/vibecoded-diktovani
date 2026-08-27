@@ -689,7 +689,6 @@ dependencies = [
  "enigo",
  "env_logger",
  "hound",
- "image",
  "libc",
  "objc",
  "objc2 0.6.4",
