@@ -55,6 +55,8 @@ pub const LANGUAGE: &str = "cs";
 /// Where stdout/stderr are mirrored (see `main::redirect_output_to_log`); the
 /// Status menu item opens this file.
 pub const LOG_PATH: &str = "/tmp/diktovani.log";
+/// Lock file guarding against a second instance (see `acquire_single_instance_lock`).
+pub const LOCK_PATH: &str = "/tmp/diktovani.lock";
 
 /// Default fixed inference overhead, in seconds (model already warm).
 const ESTIMATE_BASE_SECS: f32 = 2.0;
@@ -722,7 +724,41 @@ fn prompt_accessibility_permission() {
 #[cfg(not(target_os = "macos"))]
 fn prompt_accessibility_permission() {}
 
+/// Exclusive lock held for the whole lifetime of the process.
+static INSTANCE_LOCK: Mutex<Option<File>> = Mutex::new(None);
+
+/// Returns false when another instance already holds the lock. macOS can fire
+/// several launchers at once (our LaunchAgent, a Login Item, and the "reopen
+/// apps after restart" feature), and each extra process adds its own tray icon.
+/// The kernel drops the flock when the process dies, so no stale lock survives.
+pub fn acquire_single_instance_lock() -> bool {
+    use std::os::unix::io::AsRawFd;
+
+    let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(LOCK_PATH)
+    else {
+        return true;
+    };
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return false;
+    }
+    if let Ok(mut lock) = INSTANCE_LOCK.lock() {
+        *lock = Some(file);
+    }
+    true
+}
+
+fn release_single_instance_lock() {
+    if let Ok(mut lock) = INSTANCE_LOCK.lock() {
+        lock.take();
+    }
+}
+
 pub fn restart_app() {
+    release_single_instance_lock();
     if let Ok(exe) = std::env::current_exe() {
         let _ = std::process::Command::new(exe).spawn();
     }

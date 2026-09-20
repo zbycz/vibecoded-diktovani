@@ -22,6 +22,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     redirect_output_to_log();
+    if !core::acquire_single_instance_lock() {
+        eprintln!("[startup] another instance is already running, exiting");
+        return Ok(());
+    }
     #[cfg(target_os = "macos")]
     core::migrate_launch_agent_identifier("com.example.diktovani");
     whisper_rs::install_whisper_log_trampoline();
