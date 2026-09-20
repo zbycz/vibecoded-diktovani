@@ -882,28 +882,18 @@ pub fn set_launch_at_login(enabled: bool) -> Result<()> {
             std::fs::write(&tmp_path, plist_contents)?;
             std::fs::rename(&tmp_path, &plist_path)?;
 
+            // No `launchctl load` on purpose: launchd reads the plist at the next
+            // login, loading it here would start a second instance right away.
+            // `launchctl enable` only clears the disabled flag that older versions
+            // left in the overrides database via `unload -w`.
+            let uid = unsafe { libc::getuid() };
             let _ = Command::new("launchctl")
-                .args(["unload", "-w"])
-                .arg(&plist_path)
+                .arg("enable")
+                .arg(format!("gui/{uid}/{APP_IDENTIFIER}"))
                 .status();
-            let status = Command::new("launchctl")
-                .args(["load", "-w"])
-                .arg(&plist_path)
-                .status()
-                .map_err(|err| AppError::Message(format!("Failed to run launchctl load: {err}")))?;
-            if !status.success() {
-                return Err(AppError::Message(format!(
-                    "launchctl load failed with status {status}."
-                )));
-            }
-        } else {
-            if plist_path.exists() {
-                let _ = Command::new("launchctl")
-                    .args(["unload", "-w"])
-                    .arg(&plist_path)
-                    .status();
-                std::fs::remove_file(&plist_path)?;
-            }
+        } else if plist_path.exists() {
+            // No `launchctl unload` on purpose: it would kill the running app.
+            std::fs::remove_file(&plist_path)?;
         }
 
         Ok(())
@@ -1503,7 +1493,7 @@ fn launch_agent_plist_contents(executable: &PathBuf) -> String {
         <string>{executable}</string>
     </array>
     <key>RunAtLoad</key>
-    <false/>
+    <true/>
     <key>KeepAlive</key>
     <false/>
 </dict>
