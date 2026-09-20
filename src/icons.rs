@@ -9,19 +9,26 @@ const DESIGN_HEIGHT: f32 = 100.0;
 const MIC_CENTER_X: f32 = 36.0;
 const MIC_RENDER_HEIGHT: usize = 72;
 
+/// `tray-icon` stretches whatever bitmap it gets to the full 18pt menu-bar
+/// height, so the glyph is inset by this much design-space padding to end up
+/// the same visual size as the surrounding SF Symbol icons.
+const MIC_PADDING: f32 = 9.0;
+
 pub fn load_microphone_icon(color: Option<(u8, u8, u8)>) -> Icon {
     let height = MIC_RENDER_HEIGHT;
-    let scale = DESIGN_HEIGHT / height as f32;
-    let width = (DESIGN_WIDTH / scale).round() as usize;
-    let x_offset = (DESIGN_WIDTH - width as f32 * scale) / 2.0;
+    let box_width = DESIGN_WIDTH + 2.0 * MIC_PADDING;
+    let box_height = DESIGN_HEIGHT + 2.0 * MIC_PADDING;
+    let scale = box_height / height as f32;
+    let width = (box_width / scale).round() as usize;
+    let origin_x = (box_width - width as f32 * scale) / 2.0 - MIC_PADDING;
     let (r, g, b) = color.unwrap_or((0, 0, 0));
 
     let mut rgba = vec![0u8; width * height * 4];
     for y in 0..height {
         for x in 0..width {
             let distance = microphone_distance(
-                x_offset + (x as f32 + 0.5) * scale,
-                (y as f32 + 0.5) * scale,
+                origin_x + (x as f32 + 0.5) * scale,
+                (y as f32 + 0.5) * scale - MIC_PADDING,
             );
             let coverage = (0.5 - distance / scale).clamp(0.0, 1.0);
             set_pixel(
